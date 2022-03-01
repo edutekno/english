@@ -15220,6 +15220,1034 @@ cr.system_object.prototype.loadFromJSON = function (o)
 cr.shaders = {};
 ;
 ;
+cr.plugins_.AJAX = function(runtime)
+{
+	this.runtime = runtime;
+};
+(function ()
+{
+	var isNWjs = false;
+	var path = null;
+	var fs = null;
+	var nw_appfolder = "";
+	var pluginProto = cr.plugins_.AJAX.prototype;
+	pluginProto.Type = function(plugin)
+	{
+		this.plugin = plugin;
+		this.runtime = plugin.runtime;
+	};
+	var typeProto = pluginProto.Type.prototype;
+	typeProto.onCreate = function()
+	{
+	};
+	pluginProto.Instance = function(type)
+	{
+		this.type = type;
+		this.runtime = type.runtime;
+		this.lastData = "";
+		this.curTag = "";
+		this.progress = 0;
+		this.timeout = -1;
+		isNWjs = this.runtime.isNWjs;
+		if (isNWjs)
+		{
+			path = require("path");
+			fs = require("fs");
+			var process = window["process"] || nw["process"];
+			nw_appfolder = path["dirname"](process["execPath"]) + "\\";
+		}
+	};
+	var instanceProto = pluginProto.Instance.prototype;
+	var theInstance = null;
+	window["C2_AJAX_DCSide"] = function (event_, tag_, param_)
+	{
+		if (!theInstance)
+			return;
+		if (event_ === "success")
+		{
+			theInstance.curTag = tag_;
+			theInstance.lastData = param_;
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, theInstance);
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, theInstance);
+		}
+		else if (event_ === "error")
+		{
+			theInstance.curTag = tag_;
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, theInstance);
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, theInstance);
+		}
+		else if (event_ === "progress")
+		{
+			theInstance.progress = param_;
+			theInstance.curTag = tag_;
+			theInstance.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnProgress, theInstance);
+		}
+	};
+	instanceProto.onCreate = function()
+	{
+		theInstance = this;
+	};
+	instanceProto.saveToJSON = function ()
+	{
+		return { "lastData": this.lastData };
+	};
+	instanceProto.loadFromJSON = function (o)
+	{
+		this.lastData = o["lastData"];
+		this.curTag = "";
+		this.progress = 0;
+	};
+	var next_request_headers = {};
+	var next_override_mime = "";
+	instanceProto.doRequest = function (tag_, url_, method_, data_)
+	{
+		if (this.runtime.isDirectCanvas)
+		{
+			AppMobi["webview"]["execute"]('C2_AJAX_WebSide("' + tag_ + '", "' + url_ + '", "' + method_ + '", ' + (data_ ? '"' + data_ + '"' : "null") + ');');
+			return;
+		}
+		var self = this;
+		var request = null;
+		var doErrorFunc = function ()
+		{
+			self.curTag = tag_;
+			self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+			self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+		};
+		var errorFunc = function ()
+		{
+			if (isNWjs)
+			{
+				var filepath = nw_appfolder + url_;
+				if (fs["existsSync"](filepath))
+				{
+					fs["readFile"](filepath, {"encoding": "utf8"}, function (err, data) {
+						if (err)
+						{
+							doErrorFunc();
+							return;
+						}
+						self.curTag = tag_;
+						self.lastData = data.replace(/\r\n/g, "\n")
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+					});
+				}
+				else
+					doErrorFunc();
+			}
+			else
+				doErrorFunc();
+		};
+		var progressFunc = function (e)
+		{
+			if (!e["lengthComputable"])
+				return;
+			self.progress = e.loaded / e.total;
+			self.curTag = tag_;
+			self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnProgress, self);
+		};
+		try
+		{
+			if (this.runtime.isWindowsPhone8)
+				request = new ActiveXObject("Microsoft.XMLHTTP");
+			else
+				request = new XMLHttpRequest();
+			request.onreadystatechange = function()
+			{
+				if (request.readyState === 4)
+				{
+					self.curTag = tag_;
+					if (request.responseText)
+						self.lastData = request.responseText.replace(/\r\n/g, "\n");		// fix windows style line endings
+					else
+						self.lastData = "";
+					if (request.status >= 400)
+					{
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+						self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+					}
+					else
+					{
+						if ((!isNWjs || self.lastData.length) && !(!isNWjs && request.status === 0 && !self.lastData.length))
+						{
+							self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+							self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+						}
+					}
+				}
+			};
+			if (!this.runtime.isWindowsPhone8)
+			{
+				request.onerror = errorFunc;
+				request.ontimeout = errorFunc;
+				request.onabort = errorFunc;
+				request["onprogress"] = progressFunc;
+			}
+			request.open(method_, url_);
+			if (!this.runtime.isWindowsPhone8)
+			{
+				if (this.timeout >= 0 && typeof request["timeout"] !== "undefined")
+					request["timeout"] = this.timeout;
+			}
+			try {
+				request.responseType = "text";
+			} catch (e) {}
+			if (data_)
+			{
+				if (request["setRequestHeader"] && !next_request_headers.hasOwnProperty("Content-Type"))
+				{
+					request["setRequestHeader"]("Content-Type", "application/x-www-form-urlencoded");
+				}
+			}
+			if (request["setRequestHeader"])
+			{
+				var p;
+				for (p in next_request_headers)
+				{
+					if (next_request_headers.hasOwnProperty(p))
+					{
+						try {
+							request["setRequestHeader"](p, next_request_headers[p]);
+						}
+						catch (e) {}
+					}
+				}
+				next_request_headers = {};
+			}
+			if (next_override_mime && request["overrideMimeType"])
+			{
+				try {
+					request["overrideMimeType"](next_override_mime);
+				}
+				catch (e) {}
+				next_override_mime = "";
+			}
+			if (data_)
+				request.send(data_);
+			else
+				request.send();
+		}
+		catch (e)
+		{
+			errorFunc();
+		}
+	};
+	function Cnds() {};
+	Cnds.prototype.OnComplete = function (tag)
+	{
+		return cr.equals_nocase(tag, this.curTag);
+	};
+	Cnds.prototype.OnAnyComplete = function (tag)
+	{
+		return true;
+	};
+	Cnds.prototype.OnError = function (tag)
+	{
+		return cr.equals_nocase(tag, this.curTag);
+	};
+	Cnds.prototype.OnAnyError = function (tag)
+	{
+		return true;
+	};
+	Cnds.prototype.OnProgress = function (tag)
+	{
+		return cr.equals_nocase(tag, this.curTag);
+	};
+	pluginProto.cnds = new Cnds();
+	function Acts() {};
+	Acts.prototype.Request = function (tag_, url_)
+	{
+		var self = this;
+		if (this.runtime.isWKWebView && !this.runtime.isAbsoluteUrl(url_))
+		{
+			this.runtime.fetchLocalFileViaCordovaAsText(url_,
+			function (str)
+			{
+				self.curTag = tag_;
+				self.lastData = str.replace(/\r\n/g, "\n");		// fix windows style line endings
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+			},
+			function (err)
+			{
+				self.curTag = tag_;
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+			});
+		}
+		else
+		{
+			this.doRequest(tag_, url_, "GET");
+		}
+	};
+	Acts.prototype.RequestFile = function (tag_, file_)
+	{
+		var self = this;
+		if (this.runtime.isWKWebView)
+		{
+			this.runtime.fetchLocalFileViaCordovaAsText(file_,
+			function (str)
+			{
+				self.curTag = tag_;
+				self.lastData = str.replace(/\r\n/g, "\n");		// fix windows style line endings
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyComplete, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnComplete, self);
+			},
+			function (err)
+			{
+				self.curTag = tag_;
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnAnyError, self);
+				self.runtime.trigger(cr.plugins_.AJAX.prototype.cnds.OnError, self);
+			});
+		}
+		else
+		{
+			this.doRequest(tag_, file_, "GET");
+		}
+	};
+	Acts.prototype.Post = function (tag_, url_, data_, method_)
+	{
+		this.doRequest(tag_, url_, method_, data_);
+	};
+	Acts.prototype.SetTimeout = function (t)
+	{
+		this.timeout = t * 1000;
+	};
+	Acts.prototype.SetHeader = function (n, v)
+	{
+		next_request_headers[n] = v;
+	};
+	Acts.prototype.OverrideMIMEType = function (m)
+	{
+		next_override_mime = m;
+	};
+	pluginProto.acts = new Acts();
+	function Exps() {};
+	Exps.prototype.LastData = function (ret)
+	{
+		ret.set_string(this.lastData);
+	};
+	Exps.prototype.Progress = function (ret)
+	{
+		ret.set_float(this.progress);
+	};
+	Exps.prototype.Tag = function (ret)
+	{
+		ret.set_string(this.curTag);
+	};
+	pluginProto.exps = new Exps();
+}());
+;
+;
+cr.plugins_.Arr = function(runtime)
+{
+	this.runtime = runtime;
+};
+(function ()
+{
+	var pluginProto = cr.plugins_.Arr.prototype;
+	pluginProto.Type = function(plugin)
+	{
+		this.plugin = plugin;
+		this.runtime = plugin.runtime;
+	};
+	var typeProto = pluginProto.Type.prototype;
+	typeProto.onCreate = function()
+	{
+	};
+	pluginProto.Instance = function(type)
+	{
+		this.type = type;
+		this.runtime = type.runtime;
+	};
+	var instanceProto = pluginProto.Instance.prototype;
+	var arrCache = [];
+	function allocArray()
+	{
+		if (arrCache.length)
+			return arrCache.pop();
+		else
+			return [];
+	};
+	if (!Array.isArray)
+	{
+		Array.isArray = function (vArg) {
+			return Object.prototype.toString.call(vArg) === "[object Array]";
+		};
+	}
+	function freeArray(a)
+	{
+		var i, len;
+		for (i = 0, len = a.length; i < len; i++)
+		{
+			if (Array.isArray(a[i]))
+				freeArray(a[i]);
+		}
+		cr.clearArray(a);
+		arrCache.push(a);
+	};
+	instanceProto.onCreate = function()
+	{
+		this.cx = this.properties[0];
+		this.cy = this.properties[1];
+		this.cz = this.properties[2];
+		if (!this.recycled)
+			this.arr = allocArray();
+		var a = this.arr;
+		a.length = this.cx;
+		var x, y, z;
+		for (x = 0; x < this.cx; x++)
+		{
+			if (!a[x])
+				a[x] = allocArray();
+			a[x].length = this.cy;
+			for (y = 0; y < this.cy; y++)
+			{
+				if (!a[x][y])
+					a[x][y] = allocArray();
+				a[x][y].length = this.cz;
+				for (z = 0; z < this.cz; z++)
+					a[x][y][z] = 0;
+			}
+		}
+		this.forX = [];
+		this.forY = [];
+		this.forZ = [];
+		this.forDepth = -1;
+	};
+	instanceProto.onDestroy = function ()
+	{
+		var x;
+		for (x = 0; x < this.cx; x++)
+			freeArray(this.arr[x]);		// will recurse down and recycle other arrays
+		cr.clearArray(this.arr);
+	};
+	instanceProto.at = function (x, y, z)
+	{
+		x = Math.floor(x);
+		y = Math.floor(y);
+		z = Math.floor(z);
+		if (isNaN(x) || x < 0 || x > this.cx - 1)
+			return 0;
+		if (isNaN(y) || y < 0 || y > this.cy - 1)
+			return 0;
+		if (isNaN(z) || z < 0 || z > this.cz - 1)
+			return 0;
+		return this.arr[x][y][z];
+	};
+	instanceProto.set = function (x, y, z, val)
+	{
+		x = Math.floor(x);
+		y = Math.floor(y);
+		z = Math.floor(z);
+		if (isNaN(x) || x < 0 || x > this.cx - 1)
+			return;
+		if (isNaN(y) || y < 0 || y > this.cy - 1)
+			return;
+		if (isNaN(z) || z < 0 || z > this.cz - 1)
+			return;
+		this.arr[x][y][z] = val;
+	};
+	instanceProto.getAsJSON = function ()
+	{
+		return JSON.stringify({
+			"c2array": true,
+			"size": [this.cx, this.cy, this.cz],
+			"data": this.arr
+		});
+	};
+	instanceProto.saveToJSON = function ()
+	{
+		return {
+			"size": [this.cx, this.cy, this.cz],
+			"data": this.arr
+		};
+	};
+	instanceProto.loadFromJSON = function (o)
+	{
+		var sz = o["size"];
+		this.cx = sz[0];
+		this.cy = sz[1];
+		this.cz = sz[2];
+		this.arr = o["data"];
+	};
+	instanceProto.setSize = function (w, h, d)
+	{
+		if (w < 0) w = 0;
+		if (h < 0) h = 0;
+		if (d < 0) d = 0;
+		if (this.cx === w && this.cy === h && this.cz === d)
+			return;		// no change
+		this.cx = w;
+		this.cy = h;
+		this.cz = d;
+		var x, y, z;
+		var a = this.arr;
+		a.length = w;
+		for (x = 0; x < this.cx; x++)
+		{
+			if (cr.is_undefined(a[x]))
+				a[x] = allocArray();
+			a[x].length = h;
+			for (y = 0; y < this.cy; y++)
+			{
+				if (cr.is_undefined(a[x][y]))
+					a[x][y] = allocArray();
+				a[x][y].length = d;
+				for (z = 0; z < this.cz; z++)
+				{
+					if (cr.is_undefined(a[x][y][z]))
+						a[x][y][z] = 0;
+				}
+			}
+		}
+	};
+	instanceProto.getForX = function ()
+	{
+		if (this.forDepth >= 0 && this.forDepth < this.forX.length)
+			return this.forX[this.forDepth];
+		else
+			return 0;
+	};
+	instanceProto.getForY = function ()
+	{
+		if (this.forDepth >= 0 && this.forDepth < this.forY.length)
+			return this.forY[this.forDepth];
+		else
+			return 0;
+	};
+	instanceProto.getForZ = function ()
+	{
+		if (this.forDepth >= 0 && this.forDepth < this.forZ.length)
+			return this.forZ[this.forDepth];
+		else
+			return 0;
+	};
+	function Cnds() {};
+	Cnds.prototype.CompareX = function (x, cmp, val)
+	{
+		return cr.do_cmp(this.at(x, 0, 0), cmp, val);
+	};
+	Cnds.prototype.CompareXY = function (x, y, cmp, val)
+	{
+		return cr.do_cmp(this.at(x, y, 0), cmp, val);
+	};
+	Cnds.prototype.CompareXYZ = function (x, y, z, cmp, val)
+	{
+		return cr.do_cmp(this.at(x, y, z), cmp, val);
+	};
+	instanceProto.doForEachTrigger = function (current_event)
+	{
+		this.runtime.pushCopySol(current_event.solModifiers);
+		current_event.retrigger();
+		this.runtime.popSol(current_event.solModifiers);
+	};
+	Cnds.prototype.ArrForEach = function (dims)
+	{
+        var current_event = this.runtime.getCurrentEventStack().current_event;
+		this.forDepth++;
+		var forDepth = this.forDepth;
+		if (forDepth === this.forX.length)
+		{
+			this.forX.push(0);
+			this.forY.push(0);
+			this.forZ.push(0);
+		}
+		else
+		{
+			this.forX[forDepth] = 0;
+			this.forY[forDepth] = 0;
+			this.forZ[forDepth] = 0;
+		}
+		switch (dims) {
+		case 0:
+			for (this.forX[forDepth] = 0; this.forX[forDepth] < this.cx; this.forX[forDepth]++)
+			{
+				for (this.forY[forDepth] = 0; this.forY[forDepth] < this.cy; this.forY[forDepth]++)
+				{
+					for (this.forZ[forDepth] = 0; this.forZ[forDepth] < this.cz; this.forZ[forDepth]++)
+					{
+						this.doForEachTrigger(current_event);
+					}
+				}
+			}
+			break;
+		case 1:
+			for (this.forX[forDepth] = 0; this.forX[forDepth] < this.cx; this.forX[forDepth]++)
+			{
+				for (this.forY[forDepth] = 0; this.forY[forDepth] < this.cy; this.forY[forDepth]++)
+				{
+					this.doForEachTrigger(current_event);
+				}
+			}
+			break;
+		case 2:
+			for (this.forX[forDepth] = 0; this.forX[forDepth] < this.cx; this.forX[forDepth]++)
+			{
+				this.doForEachTrigger(current_event);
+			}
+			break;
+		}
+		this.forDepth--;
+		return false;
+	};
+	Cnds.prototype.CompareCurrent = function (cmp, val)
+	{
+		return cr.do_cmp(this.at(this.getForX(), this.getForY(), this.getForZ()), cmp, val);
+	};
+	Cnds.prototype.Contains = function(val)
+	{
+		var x, y, z;
+		for (x = 0; x < this.cx; x++)
+		{
+			for (y = 0; y < this.cy; y++)
+			{
+				for (z = 0; z < this.cz; z++)
+				{
+					if (this.arr[x][y][z] === val)
+						return true;
+				}
+			}
+		}
+		return false;
+	};
+	Cnds.prototype.IsEmpty = function ()
+	{
+		return this.cx === 0 || this.cy === 0 || this.cz === 0;
+	};
+	Cnds.prototype.CompareSize = function (axis, cmp, value)
+	{
+		var s = 0;
+		switch (axis) {
+		case 0:
+			s = this.cx;
+			break;
+		case 1:
+			s = this.cy;
+			break;
+		case 2:
+			s = this.cz;
+			break;
+		}
+		return cr.do_cmp(s, cmp, value);
+	};
+	pluginProto.cnds = new Cnds();
+	function Acts() {};
+	Acts.prototype.Clear = function ()
+	{
+		var x, y, z;
+		for (x = 0; x < this.cx; x++)
+			for (y = 0; y < this.cy; y++)
+				for (z = 0; z < this.cz; z++)
+					this.arr[x][y][z] = 0;
+	};
+	Acts.prototype.SetSize = function (w, h, d)
+	{
+		this.setSize(w, h, d);
+	};
+	Acts.prototype.SetX = function (x, val)
+	{
+		this.set(x, 0, 0, val);
+	};
+	Acts.prototype.SetXY = function (x, y, val)
+	{
+		this.set(x, y, 0, val);
+	};
+	Acts.prototype.SetXYZ = function (x, y, z, val)
+	{
+		this.set(x, y, z, val);
+	};
+	Acts.prototype.Push = function (where, value, axis)
+	{
+		var x = 0, y = 0, z = 0;
+		var a = this.arr;
+		switch (axis) {
+		case 0:	// X axis
+			if (where === 0)	// back
+			{
+				x = a.length;
+				a.push(allocArray());
+			}
+			else				// front
+			{
+				x = 0;
+				a.unshift(allocArray());
+			}
+			a[x].length = this.cy;
+			for ( ; y < this.cy; y++)
+			{
+				a[x][y] = allocArray();
+				a[x][y].length = this.cz;
+				for (z = 0; z < this.cz; z++)
+					a[x][y][z] = value;
+			}
+			this.cx++;
+			break;
+		case 1: // Y axis
+			for ( ; x < this.cx; x++)
+			{
+				if (where === 0)	// back
+				{
+					y = a[x].length;
+					a[x].push(allocArray());
+				}
+				else				// front
+				{
+					y = 0;
+					a[x].unshift(allocArray());
+				}
+				a[x][y].length = this.cz;
+				for (z = 0; z < this.cz; z++)
+					a[x][y][z] = value;
+			}
+			this.cy++;
+			break;
+		case 2:	// Z axis
+			for ( ; x < this.cx; x++)
+			{
+				for (y = 0; y < this.cy; y++)
+				{
+					if (where === 0)	// back
+					{
+						a[x][y].push(value);
+					}
+					else				// front
+					{
+						a[x][y].unshift(value);
+					}
+				}
+			}
+			this.cz++;
+			break;
+		}
+	};
+	Acts.prototype.Pop = function (where, axis)
+	{
+		var x = 0, y = 0, z = 0;
+		var a = this.arr;
+		switch (axis) {
+		case 0:	// X axis
+			if (this.cx === 0)
+				break;
+			if (where === 0)	// back
+			{
+				freeArray(a.pop());
+			}
+			else				// front
+			{
+				freeArray(a.shift());
+			}
+			this.cx--;
+			break;
+		case 1: // Y axis
+			if (this.cy === 0)
+				break;
+			for ( ; x < this.cx; x++)
+			{
+				if (where === 0)	// back
+				{
+					freeArray(a[x].pop());
+				}
+				else				// front
+				{
+					freeArray(a[x].shift());
+				}
+			}
+			this.cy--;
+			break;
+		case 2:	// Z axis
+			if (this.cz === 0)
+				break;
+			for ( ; x < this.cx; x++)
+			{
+				for (y = 0; y < this.cy; y++)
+				{
+					if (where === 0)	// back
+					{
+						a[x][y].pop();
+					}
+					else				// front
+					{
+						a[x][y].shift();
+					}
+				}
+			}
+			this.cz--;
+			break;
+		}
+	};
+	Acts.prototype.Reverse = function (axis)
+	{
+		var x = 0, y = 0, z = 0;
+		var a = this.arr;
+		if (this.cx === 0 || this.cy === 0 || this.cz === 0)
+			return;		// no point reversing empty array
+		switch (axis) {
+		case 0:	// X axis
+			a.reverse();
+			break;
+		case 1: // Y axis
+			for ( ; x < this.cx; x++)
+				a[x].reverse();
+			break;
+		case 2:	// Z axis
+			for ( ; x < this.cx; x++)
+				for (y = 0; y < this.cy; y++)
+					a[x][y].reverse();
+			break;
+		}
+	};
+	function compareValues(va, vb)
+	{
+		if (cr.is_number(va) && cr.is_number(vb))
+			return va - vb;
+		else
+		{
+			var sa = "" + va;
+			var sb = "" + vb;
+			if (sa < sb)
+				return -1;
+			else if (sa > sb)
+				return 1;
+			else
+				return 0;
+		}
+	}
+	Acts.prototype.Sort = function (axis)
+	{
+		var x = 0, y = 0, z = 0;
+		var a = this.arr;
+		if (this.cx === 0 || this.cy === 0 || this.cz === 0)
+			return;		// no point sorting empty array
+		switch (axis) {
+		case 0:	// X axis
+			a.sort(function (a, b) {
+				return compareValues(a[0][0], b[0][0]);
+			});
+			break;
+		case 1: // Y axis
+			for ( ; x < this.cx; x++)
+			{
+				a[x].sort(function (a, b) {
+					return compareValues(a[0], b[0]);
+				});
+			}
+			break;
+		case 2:	// Z axis
+			for ( ; x < this.cx; x++)
+			{
+				for (y = 0; y < this.cy; y++)
+				{
+					a[x][y].sort(compareValues);
+				}
+			}
+			break;
+		}
+	};
+	Acts.prototype.Delete = function (index, axis)
+	{
+		var x = 0, y = 0, z = 0;
+		index = Math.floor(index);
+		var a = this.arr;
+		if (index < 0)
+			return;
+		switch (axis) {
+		case 0:	// X axis
+			if (index >= this.cx)
+				break;
+			freeArray(a[index]);
+			a.splice(index, 1);
+			this.cx--;
+			break;
+		case 1: // Y axis
+			if (index >= this.cy)
+				break;
+			for ( ; x < this.cx; x++)
+			{
+				freeArray(a[x][index]);
+				a[x].splice(index, 1);
+			}
+			this.cy--;
+			break;
+		case 2:	// Z axis
+			if (index >= this.cz)
+				break;
+			for ( ; x < this.cx; x++)
+			{
+				for (y = 0; y < this.cy; y++)
+				{
+					a[x][y].splice(index, 1);
+				}
+			}
+			this.cz--;
+			break;
+		}
+	};
+	Acts.prototype.Insert = function (value, index, axis)
+	{
+		var x = 0, y = 0, z = 0;
+		index = Math.floor(index);
+		var a = this.arr;
+		if (index < 0)
+			return;
+		switch (axis) {
+		case 0:	// X axis
+			if (index > this.cx)
+				return;
+			x = index;
+			a.splice(x, 0, allocArray());
+			a[x].length = this.cy;
+			for ( ; y < this.cy; y++)
+			{
+				a[x][y] = allocArray();
+				a[x][y].length = this.cz;
+				for (z = 0; z < this.cz; z++)
+					a[x][y][z] = value;
+			}
+			this.cx++;
+			break;
+		case 1: // Y axis
+			if (index > this.cy)
+				return;
+			for ( ; x < this.cx; x++)
+			{
+				y = index;
+				a[x].splice(y, 0, allocArray());
+				a[x][y].length = this.cz;
+				for (z = 0; z < this.cz; z++)
+					a[x][y][z] = value;
+			}
+			this.cy++;
+			break;
+		case 2:	// Z axis
+			if (index > this.cz)
+				return;
+			for ( ; x < this.cx; x++)
+			{
+				for (y = 0; y < this.cy; y++)
+				{
+					a[x][y].splice(index, 0, value);
+				}
+			}
+			this.cz++;
+			break;
+		}
+	};
+	Acts.prototype.JSONLoad = function (json_)
+	{
+		var o;
+		try {
+			o = JSON.parse(json_);
+		}
+		catch(e) { return; }
+		if (!o["c2array"])		// presumably not a c2array object
+			return;
+		var sz = o["size"];
+		this.cx = sz[0];
+		this.cy = sz[1];
+		this.cz = sz[2];
+		this.arr = o["data"];
+	};
+	Acts.prototype.JSONDownload = function (filename)
+	{
+		var a = document.createElement("a");
+		if (typeof a.download === "undefined")
+		{
+			var str = 'data:text/html,' + encodeURIComponent("<p><a download='" + filename + "' href=\"data:application/json,"
+				+ encodeURIComponent(this.getAsJSON())
+				+ "\">Download link</a></p>");
+			window.open(str);
+		}
+		else
+		{
+			var body = document.getElementsByTagName("body")[0];
+			a.textContent = filename;
+			a.href = "data:application/json," + encodeURIComponent(this.getAsJSON());
+			a.download = filename;
+			body.appendChild(a);
+			var clickEvent = document.createEvent("MouseEvent");
+			clickEvent.initMouseEvent("click", true, true, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+			a.dispatchEvent(clickEvent);
+			body.removeChild(a);
+		}
+	};
+	pluginProto.acts = new Acts();
+	function Exps() {};
+	Exps.prototype.At = function (ret, x, y_, z_)
+	{
+		var y = y_ || 0;
+		var z = z_ || 0;
+		ret.set_any(this.at(x, y, z));
+	};
+	Exps.prototype.Width = function (ret)
+	{
+		ret.set_int(this.cx);
+	};
+	Exps.prototype.Height = function (ret)
+	{
+		ret.set_int(this.cy);
+	};
+	Exps.prototype.Depth = function (ret)
+	{
+		ret.set_int(this.cz);
+	};
+	Exps.prototype.CurX = function (ret)
+	{
+		ret.set_int(this.getForX());
+	};
+	Exps.prototype.CurY = function (ret)
+	{
+		ret.set_int(this.getForY());
+	};
+	Exps.prototype.CurZ = function (ret)
+	{
+		ret.set_int(this.getForZ());
+	};
+	Exps.prototype.CurValue = function (ret)
+	{
+		ret.set_any(this.at(this.getForX(), this.getForY(), this.getForZ()));
+	};
+	Exps.prototype.Front = function (ret)
+	{
+		ret.set_any(this.at(0, 0, 0));
+	};
+	Exps.prototype.Back = function (ret)
+	{
+		ret.set_any(this.at(this.cx - 1, 0, 0));
+	};
+	Exps.prototype.IndexOf = function (ret, v)
+	{
+		for (var i = 0; i < this.cx; i++)
+		{
+			if (this.arr[i][0][0] === v)
+			{
+				ret.set_int(i);
+				return;
+			}
+		}
+		ret.set_int(-1);
+	};
+	Exps.prototype.LastIndexOf = function (ret, v)
+	{
+		for (var i = this.cx - 1; i >= 0; i--)
+		{
+			if (this.arr[i][0][0] === v)
+			{
+				ret.set_int(i);
+				return;
+			}
+		}
+		ret.set_int(-1);
+	};
+	Exps.prototype.AsJSON = function (ret)
+	{
+		ret.set_string(this.getAsJSON());
+	};
+	pluginProto.exps = new Exps();
+}());
+;
+;
 cr.plugins_.Button = function(runtime)
 {
 	this.runtime = runtime;
@@ -15496,6 +16524,228 @@ cr.plugins_.Button = function(runtime)
 	pluginProto.acts = new Acts();
 	function Exps() {};
 	pluginProto.exps = new Exps();
+}());
+;
+;
+cr.plugins_.Rex_GoogleWebFontLoader = function(runtime)
+{
+	this.runtime = runtime;
+};
+(function ()
+{
+	var pluginProto = cr.plugins_.Rex_GoogleWebFontLoader.prototype;
+	pluginProto.Type = function(plugin)
+	{
+		this.plugin = plugin;
+		this.runtime = plugin.runtime;
+	};
+	var typeProto = pluginProto.Type.prototype;
+	typeProto.onCreate = function()
+	{
+	};
+	pluginProto.Instance = function(type)
+	{
+		this.type = type;
+		this.runtime = type.runtime;
+	};
+	var instanceProto = pluginProto.Instance.prototype;
+	instanceProto.onCreate = function()
+	{
+        this.timeout = Math.floor(this.properties[0]*1000);
+        this.isLocalAPI = (this.properties[0] ===0);
+        this.isLoaded = false;
+        this.exp_LastFamilyName = "";
+        var self=this;
+        var cnds = cr.plugins_.Rex_GoogleWebFontLoader.prototype.cnds;
+        window["WebFontConfig"] = {
+            "loading": function() {self.runtime.trigger(cnds.OnLoading, self);},
+            "active": function() {self.runtime.trigger(cnds.OnActive, self);},
+            "inactive": function() {self.runtime.trigger(cnds.OnInactive, self);},
+            "fontloading": function(familyName, fvd) { self.exp_LastFamilyName=familyName; self.runtime.trigger(cnds.OnFontloading, self);},
+            "fontactive": function(familyName, fvd) { self.exp_LastFamilyName=familyName; self.runtime.trigger(cnds.OnFontactive, self);},
+            "fontinactive": function(familyName, fvd) { self.exp_LastFamilyName=familyName; self.runtime.trigger(cnds.OnFontinactive, self);},
+            "timeout": this.timeout,
+        };
+	};
+	instanceProto.onDestroy = function ()
+	{
+	};
+    instanceProto.LoadAPI = function(file_name, onload_, onerror_)
+	{
+	    var scripts=document.getElementsByTagName("script");
+	    var exist=false;
+	    for(var i=0;i<scripts.length;i++)
+	    {
+	    	if(scripts[i].src.indexOf(file_name) != -1)
+	    	{
+	    		exist=true;
+	    		break;
+	    	}
+	    }
+	    if(!exist)
+	    {
+	    	var newScriptTag=document.createElement("script");
+            newScriptTag["type"] = "text/javascript";
+            newScriptTag["src"] = file_name;
+            var self=this;
+            var onLoad = function()
+            {
+                self.isLoaded = true;
+                if (onload_)
+                    onload_();
+            };
+            var onError = function()
+            {
+                if (onerror_)
+                    onerror_();
+            };
+            newScriptTag["onload"] = onLoad;
+            newScriptTag["onerror"] = onError;
+	    	document.getElementsByTagName("head")[0].appendChild(newScriptTag);
+	    }
+	};
+    var getAPISrc = function (isLocalAPI)
+    {
+        var url;
+        if (isLocalAPI)
+        {
+            url = "webfont.js";
+        }
+        else
+        {
+            var protocol = ('https:' == document.location.protocol ? 'https' : 'http');
+            url = protocol + "://ajax.googleapis.com/ajax/libs/webfont/1.6.16/webfont.js";
+        }
+        return url;
+    };
+    var isCSSFile = function (url_)
+    {
+        var s = url_.split(".");
+        var ext = s[ s.length-1 ];
+        return (ext === "css");
+    }
+    var insertCss = function ( code )
+    {
+        var style = document.createElement('style');
+        style.type = 'text/css';
+        if (style.styleSheet)
+        {
+            style.styleSheet.cssText = code;
+        }
+        else
+        {
+            style.innerHTML = code;
+        }
+        document.getElementsByTagName("head")[0].appendChild( style );
+    };
+	function Cnds() {};
+	pluginProto.cnds = new Cnds();
+	Cnds.prototype.OnLoading = function ()
+	{
+	    return true;
+	};
+	Cnds.prototype.OnActive = function ()
+	{
+	    return true;
+	};
+	Cnds.prototype.OnInactive = function ()
+	{
+	    return true;
+	};
+	Cnds.prototype.OnFontloading = function ()
+	{
+	    return true;
+	};
+	Cnds.prototype.OnFontactive = function ()
+	{
+	    return true;
+	};
+	Cnds.prototype.OnFontinactive = function ()
+	{
+	    return true;
+	};
+	Cnds.prototype.OnLoadAPIError = function ()
+	{
+	    return true;
+	};
+	function Acts() {};
+	pluginProto.acts = new Acts();
+	Acts.prototype.Load = function()
+	{
+        if (this.isLoaded)
+        {
+            return;
+        }
+        else
+        {
+            var self=this;
+            var on_error = function()
+            {
+                self.runtime.trigger(cr.plugins_.Rex_GoogleWebFontLoader.prototype.cnds.OnLoadAPIError, self);
+            };
+            this.LoadAPI(getAPISrc(this.isLocalAPI), null, on_error);
+        }
+	};
+	Acts.prototype.AddGoogleFont = function(name)
+	{
+        var fontsCfg = window["WebFontConfig"];
+        if (!fontsCfg.hasOwnProperty("google"))
+        {
+            fontsCfg["google"] = { "families":[] };
+        }
+        var  families = fontsCfg["google"]["families"];
+        if (cr.fastIndexOf(families, name) === -1)
+            families.push(name);
+	};
+	Acts.prototype.AddTypekitFont = function(id, api)
+	{
+        var fontsCfg = window["WebFontConfig"];
+        fontsCfg["typekit"] = {
+            "id": id,
+            "api": api,
+        }
+	};
+	Acts.prototype.AddFontsCom = function(projectId, version, loadAllFonts)
+	{
+        var fontsCfg = window["WebFontConfig"];
+        fontsCfg["monotype"] = {
+            "projectId": projectId,
+            "version": version,
+            "loadAllFonts": (loadAllFonts===1),
+        }
+	};
+	Acts.prototype.AddCustomFont = function(name, url)
+	{
+        var fontsCfg = window["WebFontConfig"];
+        if (!fontsCfg.hasOwnProperty("custom"))
+        {
+            fontsCfg["custom"] = { "families":[] };
+        }
+        var  families = fontsCfg["custom"]["families"];
+        if (cr.fastIndexOf(families, name) === -1)
+            families.push(name);
+        if (isCSSFile(url))
+        {
+            if (!fontsCfg["custom"].hasOwnProperty("urls"))
+            {
+                fontsCfg["custom"]["urls"] = [];
+            }
+            var urls = fontsCfg["custom"]["urls"];
+            if (cr.fastIndexOf(urls, url) === -1)
+                urls.push(url);
+        }
+        else
+        {
+            var cssCode = "@font-face { font-family: '" + name + "'; src: url('" + url + "'); }";
+            insertCss(cssCode);
+        }
+	};
+	function Exps() {};
+	pluginProto.exps = new Exps();
+	Exps.prototype.LastFamilyName = function (ret)
+	{
+		ret.set_string(this.exp_LastFamilyName);
+	}
 }());
 ;
 ;
@@ -17384,6 +18634,1231 @@ cr.plugins_.Text = function(runtime)
 }());
 ;
 ;
+cr.plugins_.Touch = function(runtime)
+{
+	this.runtime = runtime;
+};
+(function ()
+{
+	var pluginProto = cr.plugins_.Touch.prototype;
+	pluginProto.Type = function(plugin)
+	{
+		this.plugin = plugin;
+		this.runtime = plugin.runtime;
+	};
+	var typeProto = pluginProto.Type.prototype;
+	typeProto.onCreate = function()
+	{
+	};
+	pluginProto.Instance = function(type)
+	{
+		this.type = type;
+		this.runtime = type.runtime;
+		this.touches = [];
+		this.mouseDown = false;
+	};
+	var instanceProto = pluginProto.Instance.prototype;
+	var dummyoffset = {left: 0, top: 0};
+	instanceProto.findTouch = function (id)
+	{
+		var i, len;
+		for (i = 0, len = this.touches.length; i < len; i++)
+		{
+			if (this.touches[i]["id"] === id)
+				return i;
+		}
+		return -1;
+	};
+	var appmobi_accx = 0;
+	var appmobi_accy = 0;
+	var appmobi_accz = 0;
+	function AppMobiGetAcceleration(evt)
+	{
+		appmobi_accx = evt.x;
+		appmobi_accy = evt.y;
+		appmobi_accz = evt.z;
+	};
+	var pg_accx = 0;
+	var pg_accy = 0;
+	var pg_accz = 0;
+	function PhoneGapGetAcceleration(evt)
+	{
+		pg_accx = evt.x;
+		pg_accy = evt.y;
+		pg_accz = evt.z;
+	};
+	var theInstance = null;
+	var touchinfo_cache = [];
+	function AllocTouchInfo(x, y, id, index)
+	{
+		var ret;
+		if (touchinfo_cache.length)
+			ret = touchinfo_cache.pop();
+		else
+			ret = new TouchInfo();
+		ret.init(x, y, id, index);
+		return ret;
+	};
+	function ReleaseTouchInfo(ti)
+	{
+		if (touchinfo_cache.length < 100)
+			touchinfo_cache.push(ti);
+	};
+	var GESTURE_HOLD_THRESHOLD = 15;		// max px motion for hold gesture to register
+	var GESTURE_HOLD_TIMEOUT = 500;			// time for hold gesture to register
+	var GESTURE_TAP_TIMEOUT = 333;			// time for tap gesture to register
+	var GESTURE_DOUBLETAP_THRESHOLD = 25;	// max distance apart for taps to be
+	function TouchInfo()
+	{
+		this.starttime = 0;
+		this.time = 0;
+		this.lasttime = 0;
+		this.startx = 0;
+		this.starty = 0;
+		this.x = 0;
+		this.y = 0;
+		this.lastx = 0;
+		this.lasty = 0;
+		this["id"] = 0;
+		this.startindex = 0;
+		this.triggeredHold = false;
+		this.tooFarForHold = false;
+	};
+	TouchInfo.prototype.init = function (x, y, id, index)
+	{
+		var nowtime = cr.performance_now();
+		this.time = nowtime;
+		this.lasttime = nowtime;
+		this.starttime = nowtime;
+		this.startx = x;
+		this.starty = y;
+		this.x = x;
+		this.y = y;
+		this.lastx = x;
+		this.lasty = y;
+		this.width = 0;
+		this.height = 0;
+		this.pressure = 0;
+		this["id"] = id;
+		this.startindex = index;
+		this.triggeredHold = false;
+		this.tooFarForHold = false;
+	};
+	TouchInfo.prototype.update = function (nowtime, x, y, width, height, pressure)
+	{
+		this.lasttime = this.time;
+		this.time = nowtime;
+		this.lastx = this.x;
+		this.lasty = this.y;
+		this.x = x;
+		this.y = y;
+		this.width = width;
+		this.height = height;
+		this.pressure = pressure;
+		if (!this.tooFarForHold && cr.distanceTo(this.startx, this.starty, this.x, this.y) >= GESTURE_HOLD_THRESHOLD)
+		{
+			this.tooFarForHold = true;
+		}
+	};
+	TouchInfo.prototype.maybeTriggerHold = function (inst, index)
+	{
+		if (this.triggeredHold)
+			return;		// already triggered this gesture
+		var nowtime = cr.performance_now();
+		if (nowtime - this.starttime >= GESTURE_HOLD_TIMEOUT && !this.tooFarForHold && cr.distanceTo(this.startx, this.starty, this.x, this.y) < GESTURE_HOLD_THRESHOLD)
+		{
+			this.triggeredHold = true;
+			inst.trigger_index = this.startindex;
+			inst.trigger_id = this["id"];
+			inst.getTouchIndex = index;
+			inst.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnHoldGesture, inst);
+			inst.curTouchX = this.x;
+			inst.curTouchY = this.y;
+			inst.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnHoldGestureObject, inst);
+			inst.getTouchIndex = 0;
+		}
+	};
+	var lastTapX = -1000;
+	var lastTapY = -1000;
+	var lastTapTime = -10000;
+	TouchInfo.prototype.maybeTriggerTap = function (inst, index)
+	{
+		if (this.triggeredHold)
+			return;
+		var nowtime = cr.performance_now();
+		if (nowtime - this.starttime <= GESTURE_TAP_TIMEOUT && !this.tooFarForHold && cr.distanceTo(this.startx, this.starty, this.x, this.y) < GESTURE_HOLD_THRESHOLD)
+		{
+			inst.trigger_index = this.startindex;
+			inst.trigger_id = this["id"];
+			inst.getTouchIndex = index;
+			if ((nowtime - lastTapTime <= GESTURE_TAP_TIMEOUT * 2) && cr.distanceTo(lastTapX, lastTapY, this.x, this.y) < GESTURE_DOUBLETAP_THRESHOLD)
+			{
+				inst.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnDoubleTapGesture, inst);
+				inst.curTouchX = this.x;
+				inst.curTouchY = this.y;
+				inst.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnDoubleTapGestureObject, inst);
+				lastTapX = -1000;
+				lastTapY = -1000;
+				lastTapTime = -10000;
+			}
+			else
+			{
+				inst.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTapGesture, inst);
+				inst.curTouchX = this.x;
+				inst.curTouchY = this.y;
+				inst.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTapGestureObject, inst);
+				lastTapX = this.x;
+				lastTapY = this.y;
+				lastTapTime = nowtime;
+			}
+			inst.getTouchIndex = 0;
+		}
+	};
+	instanceProto.onCreate = function()
+	{
+		theInstance = this;
+		this.isWindows8 = !!(typeof window["c2isWindows8"] !== "undefined" && window["c2isWindows8"]);
+		this.orient_alpha = 0;
+		this.orient_beta = 0;
+		this.orient_gamma = 0;
+		this.acc_g_x = 0;
+		this.acc_g_y = 0;
+		this.acc_g_z = 0;
+		this.acc_x = 0;
+		this.acc_y = 0;
+		this.acc_z = 0;
+		this.curTouchX = 0;
+		this.curTouchY = 0;
+		this.trigger_index = 0;
+		this.trigger_id = 0;
+		this.trigger_permission = 0;
+		this.getTouchIndex = 0;
+		this.useMouseInput = (this.properties[0] !== 0);
+		var elem = (this.runtime.fullscreen_mode > 0) ? document : this.runtime.canvas;
+		var elem2 = document;
+		if (this.runtime.isDirectCanvas)
+			elem2 = elem = window["Canvas"];
+		else if (this.runtime.isCocoonJs)
+			elem2 = elem = window;
+		var self = this;
+		if (typeof PointerEvent !== "undefined")
+		{
+			elem.addEventListener("pointerdown",
+				function(info) {
+					self.onPointerStart(info);
+				},
+				false
+			);
+			elem.addEventListener("pointermove",
+				function(info) {
+					self.onPointerMove(info);
+				},
+				false
+			);
+			elem2.addEventListener("pointerup",
+				function(info) {
+					self.onPointerEnd(info, false);
+				},
+				false
+			);
+			elem2.addEventListener("pointercancel",
+				function(info) {
+					self.onPointerEnd(info, true);
+				},
+				false
+			);
+			if (this.runtime.canvas)
+			{
+				this.runtime.canvas.addEventListener("MSGestureHold", function(e) {
+					e.preventDefault();
+				}, false);
+				document.addEventListener("MSGestureHold", function(e) {
+					e.preventDefault();
+				}, false);
+				this.runtime.canvas.addEventListener("gesturehold", function(e) {
+					e.preventDefault();
+				}, false);
+				document.addEventListener("gesturehold", function(e) {
+					e.preventDefault();
+				}, false);
+			}
+		}
+		else if (window.navigator["msPointerEnabled"])
+		{
+			elem.addEventListener("MSPointerDown",
+				function(info) {
+					self.onPointerStart(info);
+				},
+				false
+			);
+			elem.addEventListener("MSPointerMove",
+				function(info) {
+					self.onPointerMove(info);
+				},
+				false
+			);
+			elem2.addEventListener("MSPointerUp",
+				function(info) {
+					self.onPointerEnd(info, false);
+				},
+				false
+			);
+			elem2.addEventListener("MSPointerCancel",
+				function(info) {
+					self.onPointerEnd(info, true);
+				},
+				false
+			);
+			if (this.runtime.canvas)
+			{
+				this.runtime.canvas.addEventListener("MSGestureHold", function(e) {
+					e.preventDefault();
+				}, false);
+				document.addEventListener("MSGestureHold", function(e) {
+					e.preventDefault();
+				}, false);
+			}
+		}
+		else
+		{
+			elem.addEventListener("touchstart",
+				function(info) {
+					self.onTouchStart(info);
+				},
+				false
+			);
+			elem.addEventListener("touchmove",
+				function(info) {
+					self.onTouchMove(info);
+				},
+				false
+			);
+			elem2.addEventListener("touchend",
+				function(info) {
+					self.onTouchEnd(info, false);
+				},
+				false
+			);
+			elem2.addEventListener("touchcancel",
+				function(info) {
+					self.onTouchEnd(info, true);
+				},
+				false
+			);
+		}
+		if (this.isWindows8)
+		{
+			var win8accelerometerFn = function(e) {
+					var reading = e["reading"];
+					self.acc_x = reading["accelerationX"];
+					self.acc_y = reading["accelerationY"];
+					self.acc_z = reading["accelerationZ"];
+				};
+			var win8inclinometerFn = function(e) {
+					var reading = e["reading"];
+					self.orient_alpha = reading["yawDegrees"];
+					self.orient_beta = reading["pitchDegrees"];
+					self.orient_gamma = reading["rollDegrees"];
+				};
+			var accelerometer = Windows["Devices"]["Sensors"]["Accelerometer"]["getDefault"]();
+            if (accelerometer)
+			{
+                accelerometer["reportInterval"] = Math.max(accelerometer["minimumReportInterval"], 16);
+				accelerometer.addEventListener("readingchanged", win8accelerometerFn);
+            }
+			var inclinometer = Windows["Devices"]["Sensors"]["Inclinometer"]["getDefault"]();
+			if (inclinometer)
+			{
+				inclinometer["reportInterval"] = Math.max(inclinometer["minimumReportInterval"], 16);
+				inclinometer.addEventListener("readingchanged", win8inclinometerFn);
+			}
+			document.addEventListener("visibilitychange", function(e) {
+				if (document["hidden"] || document["msHidden"])
+				{
+					if (accelerometer)
+						accelerometer.removeEventListener("readingchanged", win8accelerometerFn);
+					if (inclinometer)
+						inclinometer.removeEventListener("readingchanged", win8inclinometerFn);
+				}
+				else
+				{
+					if (accelerometer)
+						accelerometer.addEventListener("readingchanged", win8accelerometerFn);
+					if (inclinometer)
+						inclinometer.addEventListener("readingchanged", win8inclinometerFn);
+				}
+			}, false);
+		}
+		else
+		{
+			window.addEventListener("deviceorientation", function (eventData) {
+				self.orient_alpha = eventData["alpha"] || 0;
+				self.orient_beta = eventData["beta"] || 0;
+				self.orient_gamma = eventData["gamma"] || 0;
+			}, false);
+			window.addEventListener("devicemotion", function (eventData) {
+				if (eventData["accelerationIncludingGravity"])
+				{
+					self.acc_g_x = eventData["accelerationIncludingGravity"]["x"] || 0;
+					self.acc_g_y = eventData["accelerationIncludingGravity"]["y"] || 0;
+					self.acc_g_z = eventData["accelerationIncludingGravity"]["z"] || 0;
+				}
+				if (eventData["acceleration"])
+				{
+					self.acc_x = eventData["acceleration"]["x"] || 0;
+					self.acc_y = eventData["acceleration"]["y"] || 0;
+					self.acc_z = eventData["acceleration"]["z"] || 0;
+				}
+			}, false);
+		}
+		if (this.useMouseInput && !this.runtime.isDomFree)
+		{
+			jQuery(document).mousemove(
+				function(info) {
+					self.onMouseMove(info);
+				}
+			);
+			jQuery(document).mousedown(
+				function(info) {
+					self.onMouseDown(info);
+				}
+			);
+			jQuery(document).mouseup(
+				function(info) {
+					self.onMouseUp(info);
+				}
+			);
+		}
+		if (!this.runtime.isiOS && this.runtime.isCordova && navigator["accelerometer"] && navigator["accelerometer"]["watchAcceleration"])
+		{
+			navigator["accelerometer"]["watchAcceleration"](PhoneGapGetAcceleration, null, { "frequency": 40 });
+		}
+		this.runtime.tick2Me(this);
+	};
+	instanceProto.onPointerMove = function (info)
+	{
+		if (info["pointerType"] === info["MSPOINTER_TYPE_MOUSE"] || info["pointerType"] === "mouse")
+			return;
+		if (info.preventDefault)
+			info.preventDefault();
+		var i = this.findTouch(info["pointerId"]);
+		var nowtime = cr.performance_now();
+		if (i >= 0)
+		{
+			var offset = this.runtime.isDomFree ? dummyoffset : jQuery(this.runtime.canvas).offset();
+			var t = this.touches[i];
+			if (nowtime - t.time < 2)
+				return;
+			t.update(nowtime, info.pageX - offset.left, info.pageY - offset.top, info.width || 0, info.height || 0, info.pressure || 0);
+		}
+	};
+	instanceProto.onPointerStart = function (info)
+	{
+		if (info["pointerType"] === info["MSPOINTER_TYPE_MOUSE"] || info["pointerType"] === "mouse")
+			return;
+		if (info.preventDefault && cr.isCanvasInputEvent(info))
+			info.preventDefault();
+		var offset = this.runtime.isDomFree ? dummyoffset : jQuery(this.runtime.canvas).offset();
+		var touchx = info.pageX - offset.left;
+		var touchy = info.pageY - offset.top;
+		var nowtime = cr.performance_now();
+		this.trigger_index = this.touches.length;
+		this.trigger_id = info["pointerId"];
+		this.touches.push(AllocTouchInfo(touchx, touchy, info["pointerId"], this.trigger_index));
+		this.runtime.isInUserInputEvent = true;
+		this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnNthTouchStart, this);
+		this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTouchStart, this);
+		this.curTouchX = touchx;
+		this.curTouchY = touchy;
+		this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTouchObject, this);
+		this.runtime.isInUserInputEvent = false;
+	};
+	instanceProto.onPointerEnd = function (info, isCancel)
+	{
+		if (info["pointerType"] === info["MSPOINTER_TYPE_MOUSE"] || info["pointerType"] === "mouse")
+			return;
+		if (info.preventDefault && cr.isCanvasInputEvent(info))
+			info.preventDefault();
+		var i = this.findTouch(info["pointerId"]);
+		this.trigger_index = (i >= 0 ? this.touches[i].startindex : -1);
+		this.trigger_id = (i >= 0 ? this.touches[i]["id"] : -1);
+		this.runtime.isInUserInputEvent = true;
+		this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnNthTouchEnd, this);
+		this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTouchEnd, this);
+		if (i >= 0)
+		{
+			if (!isCancel)
+				this.touches[i].maybeTriggerTap(this, i);
+			ReleaseTouchInfo(this.touches[i]);
+			this.touches.splice(i, 1);
+		}
+		this.runtime.isInUserInputEvent = false;
+	};
+	instanceProto.onTouchMove = function (info)
+	{
+		if (info.preventDefault)
+			info.preventDefault();
+		var nowtime = cr.performance_now();
+		var i, len, t, u;
+		for (i = 0, len = info.changedTouches.length; i < len; i++)
+		{
+			t = info.changedTouches[i];
+			var j = this.findTouch(t["identifier"]);
+			if (j >= 0)
+			{
+				var offset = this.runtime.isDomFree ? dummyoffset : jQuery(this.runtime.canvas).offset();
+				u = this.touches[j];
+				if (nowtime - u.time < 2)
+					continue;
+				var touchWidth = (t.radiusX || t.webkitRadiusX || t.mozRadiusX || t.msRadiusX || 0) * 2;
+				var touchHeight = (t.radiusY || t.webkitRadiusY || t.mozRadiusY || t.msRadiusY || 0) * 2;
+				var touchForce = t.force || t.webkitForce || t.mozForce || t.msForce || 0;
+				u.update(nowtime, t.pageX - offset.left, t.pageY - offset.top, touchWidth, touchHeight, touchForce);
+			}
+		}
+	};
+	instanceProto.onTouchStart = function (info)
+	{
+		if (info.preventDefault && cr.isCanvasInputEvent(info))
+			info.preventDefault();
+		var offset = this.runtime.isDomFree ? dummyoffset : jQuery(this.runtime.canvas).offset();
+		var nowtime = cr.performance_now();
+		this.runtime.isInUserInputEvent = true;
+		var i, len, t, j;
+		for (i = 0, len = info.changedTouches.length; i < len; i++)
+		{
+			t = info.changedTouches[i];
+			j = this.findTouch(t["identifier"]);
+			if (j !== -1)
+				continue;
+			var touchx = t.pageX - offset.left;
+			var touchy = t.pageY - offset.top;
+			this.trigger_index = this.touches.length;
+			this.trigger_id = t["identifier"];
+			this.touches.push(AllocTouchInfo(touchx, touchy, t["identifier"], this.trigger_index));
+			this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnNthTouchStart, this);
+			this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTouchStart, this);
+			this.curTouchX = touchx;
+			this.curTouchY = touchy;
+			this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTouchObject, this);
+		}
+		this.runtime.isInUserInputEvent = false;
+	};
+	instanceProto.onTouchEnd = function (info, isCancel)
+	{
+		if (info.preventDefault && cr.isCanvasInputEvent(info))
+			info.preventDefault();
+		this.runtime.isInUserInputEvent = true;
+		var i, len, t, j;
+		for (i = 0, len = info.changedTouches.length; i < len; i++)
+		{
+			t = info.changedTouches[i];
+			j = this.findTouch(t["identifier"]);
+			if (j >= 0)
+			{
+				this.trigger_index = this.touches[j].startindex;
+				this.trigger_id = this.touches[j]["id"];
+				this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnNthTouchEnd, this);
+				this.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnTouchEnd, this);
+				if (!isCancel)
+					this.touches[j].maybeTriggerTap(this, j);
+				ReleaseTouchInfo(this.touches[j]);
+				this.touches.splice(j, 1);
+			}
+		}
+		this.runtime.isInUserInputEvent = false;
+	};
+	instanceProto.getAlpha = function ()
+	{
+		if (this.runtime.isCordova && this.orient_alpha === 0 && pg_accz !== 0)
+			return pg_accz * 90;
+		else
+			return this.orient_alpha;
+	};
+	instanceProto.getBeta = function ()
+	{
+		if (this.runtime.isCordova && this.orient_beta === 0 && pg_accy !== 0)
+			return pg_accy * 90;
+		else
+			return this.orient_beta;
+	};
+	instanceProto.getGamma = function ()
+	{
+		if (this.runtime.isCordova && this.orient_gamma === 0 && pg_accx !== 0)
+			return pg_accx * 90;
+		else
+			return this.orient_gamma;
+	};
+	var noop_func = function(){};
+	function isCompatibilityMouseEvent(e)
+	{
+		return (e["sourceCapabilities"] && e["sourceCapabilities"]["firesTouchEvents"]) ||
+				(e.originalEvent && e.originalEvent["sourceCapabilities"] && e.originalEvent["sourceCapabilities"]["firesTouchEvents"]);
+	};
+	instanceProto.onMouseDown = function(info)
+	{
+		if (isCompatibilityMouseEvent(info))
+			return;
+		var t = { pageX: info.pageX, pageY: info.pageY, "identifier": 0 };
+		var fakeinfo = { changedTouches: [t] };
+		this.onTouchStart(fakeinfo);
+		this.mouseDown = true;
+	};
+	instanceProto.onMouseMove = function(info)
+	{
+		if (!this.mouseDown)
+			return;
+		if (isCompatibilityMouseEvent(info))
+			return;
+		var t = { pageX: info.pageX, pageY: info.pageY, "identifier": 0 };
+		var fakeinfo = { changedTouches: [t] };
+		this.onTouchMove(fakeinfo);
+	};
+	instanceProto.onMouseUp = function(info)
+	{
+		if (info.preventDefault && this.runtime.had_a_click && !this.runtime.isMobile)
+			info.preventDefault();
+		this.runtime.had_a_click = true;
+		if (isCompatibilityMouseEvent(info))
+			return;
+		var t = { pageX: info.pageX, pageY: info.pageY, "identifier": 0 };
+		var fakeinfo = { changedTouches: [t] };
+		this.onTouchEnd(fakeinfo);
+		this.mouseDown = false;
+	};
+	instanceProto.tick2 = function()
+	{
+		var i, len, t;
+		var nowtime = cr.performance_now();
+		for (i = 0, len = this.touches.length; i < len; ++i)
+		{
+			t = this.touches[i];
+			if (t.time <= nowtime - 50)
+				t.lasttime = nowtime;
+			t.maybeTriggerHold(this, i);
+		}
+	};
+	function Cnds() {};
+	Cnds.prototype.OnTouchStart = function ()
+	{
+		return true;
+	};
+	Cnds.prototype.OnTouchEnd = function ()
+	{
+		return true;
+	};
+	Cnds.prototype.IsInTouch = function ()
+	{
+		return this.touches.length;
+	};
+	Cnds.prototype.OnTouchObject = function (type)
+	{
+		if (!type)
+			return false;
+		return this.runtime.testAndSelectCanvasPointOverlap(type, this.curTouchX, this.curTouchY, false);
+	};
+	var touching = [];
+	Cnds.prototype.IsTouchingObject = function (type)
+	{
+		if (!type)
+			return false;
+		var sol = type.getCurrentSol();
+		var instances = sol.getObjects();
+		var px, py;
+		var i, leni, j, lenj;
+		for (i = 0, leni = instances.length; i < leni; i++)
+		{
+			var inst = instances[i];
+			inst.update_bbox();
+			for (j = 0, lenj = this.touches.length; j < lenj; j++)
+			{
+				var touch = this.touches[j];
+				px = inst.layer.canvasToLayer(touch.x, touch.y, true);
+				py = inst.layer.canvasToLayer(touch.x, touch.y, false);
+				if (inst.contains_pt(px, py))
+				{
+					touching.push(inst);
+					break;
+				}
+			}
+		}
+		if (touching.length)
+		{
+			sol.select_all = false;
+			cr.shallowAssignArray(sol.instances, touching);
+			type.applySolToContainer();
+			cr.clearArray(touching);
+			return true;
+		}
+		else
+			return false;
+	};
+	Cnds.prototype.CompareTouchSpeed = function (index, cmp, s)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+			return false;
+		var t = this.touches[index];
+		var dist = cr.distanceTo(t.x, t.y, t.lastx, t.lasty);
+		var timediff = (t.time - t.lasttime) / 1000;
+		var speed = 0;
+		if (timediff > 0)
+			speed = dist / timediff;
+		return cr.do_cmp(speed, cmp, s);
+	};
+	Cnds.prototype.OrientationSupported = function ()
+	{
+		return typeof window["DeviceOrientationEvent"] !== "undefined";
+	};
+	Cnds.prototype.MotionSupported = function ()
+	{
+		return typeof window["DeviceMotionEvent"] !== "undefined";
+	};
+	Cnds.prototype.CompareOrientation = function (orientation_, cmp_, angle_)
+	{
+		var v = 0;
+		if (orientation_ === 0)
+			v = this.getAlpha();
+		else if (orientation_ === 1)
+			v = this.getBeta();
+		else
+			v = this.getGamma();
+		return cr.do_cmp(v, cmp_, angle_);
+	};
+	Cnds.prototype.CompareAcceleration = function (acceleration_, cmp_, angle_)
+	{
+		var v = 0;
+		if (acceleration_ === 0)
+			v = this.acc_g_x;
+		else if (acceleration_ === 1)
+			v = this.acc_g_y;
+		else if (acceleration_ === 2)
+			v = this.acc_g_z;
+		else if (acceleration_ === 3)
+			v = this.acc_x;
+		else if (acceleration_ === 4)
+			v = this.acc_y;
+		else if (acceleration_ === 5)
+			v = this.acc_z;
+		return cr.do_cmp(v, cmp_, angle_);
+	};
+	Cnds.prototype.OnNthTouchStart = function (touch_)
+	{
+		touch_ = Math.floor(touch_);
+		return touch_ === this.trigger_index;
+	};
+	Cnds.prototype.OnNthTouchEnd = function (touch_)
+	{
+		touch_ = Math.floor(touch_);
+		return touch_ === this.trigger_index;
+	};
+	Cnds.prototype.HasNthTouch = function (touch_)
+	{
+		touch_ = Math.floor(touch_);
+		return this.touches.length >= touch_ + 1;
+	};
+	Cnds.prototype.OnHoldGesture = function ()
+	{
+		return true;
+	};
+	Cnds.prototype.OnTapGesture = function ()
+	{
+		return true;
+	};
+	Cnds.prototype.OnDoubleTapGesture = function ()
+	{
+		return true;
+	};
+	Cnds.prototype.OnHoldGestureObject = function (type)
+	{
+		if (!type)
+			return false;
+		return this.runtime.testAndSelectCanvasPointOverlap(type, this.curTouchX, this.curTouchY, false);
+	};
+	Cnds.prototype.OnTapGestureObject = function (type)
+	{
+		if (!type)
+			return false;
+		return this.runtime.testAndSelectCanvasPointOverlap(type, this.curTouchX, this.curTouchY, false);
+	};
+	Cnds.prototype.OnDoubleTapGestureObject = function (type)
+	{
+		if (!type)
+			return false;
+		return this.runtime.testAndSelectCanvasPointOverlap(type, this.curTouchX, this.curTouchY, false);
+	};
+	Cnds.prototype.OnPermissionGranted = function (type)
+	{
+		return this.trigger_permission === type;
+	};
+	Cnds.prototype.OnPermissionDenied = function (type)
+	{
+		return this.trigger_permission === type;
+	};
+	pluginProto.cnds = new Cnds();
+	function Acts() {};
+	Acts.prototype.RequestPermission = function (type)
+	{
+		var self = this;
+		var promise = Promise.resolve(true);
+		if (type === 0)		// orientation
+		{
+			if (window["DeviceOrientationEvent"] && window["DeviceOrientationEvent"]["requestPermission"])
+			{
+				promise = window["DeviceOrientationEvent"]["requestPermission"]()
+				.then(function (state)
+				{
+					return state === "granted";
+				});
+			}
+		}
+		else				// motion
+		{
+			if (window["DeviceMotionEvent"] && window["DeviceMotionEvent"]["requestPermission"])
+			{
+				promise = window["DeviceMotionEvent"]["requestPermission"]()
+				.then(function (state)
+				{
+					return state === "granted";
+				});
+			}
+		}
+		promise.then(function (result)
+		{
+			self.trigger_permission = type;
+			if (result)
+				self.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnPermissionGranted, self);
+			else
+				self.runtime.trigger(cr.plugins_.Touch.prototype.cnds.OnPermissionDenied, self);
+		});
+	};
+	pluginProto.acts = new Acts();
+	function Exps() {};
+	Exps.prototype.TouchCount = function (ret)
+	{
+		ret.set_int(this.touches.length);
+	};
+	Exps.prototype.X = function (ret, layerparam)
+	{
+		var index = this.getTouchIndex;
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var layer, oldScale, oldZoomRate, oldParallaxX, oldAngle;
+		if (cr.is_undefined(layerparam))
+		{
+			layer = this.runtime.getLayerByNumber(0);
+			oldScale = layer.scale;
+			oldZoomRate = layer.zoomRate;
+			oldParallaxX = layer.parallaxX;
+			oldAngle = layer.angle;
+			layer.scale = 1;
+			layer.zoomRate = 1.0;
+			layer.parallaxX = 1.0;
+			layer.angle = 0;
+			ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, true));
+			layer.scale = oldScale;
+			layer.zoomRate = oldZoomRate;
+			layer.parallaxX = oldParallaxX;
+			layer.angle = oldAngle;
+		}
+		else
+		{
+			if (cr.is_number(layerparam))
+				layer = this.runtime.getLayerByNumber(layerparam);
+			else
+				layer = this.runtime.getLayerByName(layerparam);
+			if (layer)
+				ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, true));
+			else
+				ret.set_float(0);
+		}
+	};
+	Exps.prototype.XAt = function (ret, index, layerparam)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var layer, oldScale, oldZoomRate, oldParallaxX, oldAngle;
+		if (cr.is_undefined(layerparam))
+		{
+			layer = this.runtime.getLayerByNumber(0);
+			oldScale = layer.scale;
+			oldZoomRate = layer.zoomRate;
+			oldParallaxX = layer.parallaxX;
+			oldAngle = layer.angle;
+			layer.scale = 1;
+			layer.zoomRate = 1.0;
+			layer.parallaxX = 1.0;
+			layer.angle = 0;
+			ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, true));
+			layer.scale = oldScale;
+			layer.zoomRate = oldZoomRate;
+			layer.parallaxX = oldParallaxX;
+			layer.angle = oldAngle;
+		}
+		else
+		{
+			if (cr.is_number(layerparam))
+				layer = this.runtime.getLayerByNumber(layerparam);
+			else
+				layer = this.runtime.getLayerByName(layerparam);
+			if (layer)
+				ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, true));
+			else
+				ret.set_float(0);
+		}
+	};
+	Exps.prototype.XForID = function (ret, id, layerparam)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		var layer, oldScale, oldZoomRate, oldParallaxX, oldAngle;
+		if (cr.is_undefined(layerparam))
+		{
+			layer = this.runtime.getLayerByNumber(0);
+			oldScale = layer.scale;
+			oldZoomRate = layer.zoomRate;
+			oldParallaxX = layer.parallaxX;
+			oldAngle = layer.angle;
+			layer.scale = 1;
+			layer.zoomRate = 1.0;
+			layer.parallaxX = 1.0;
+			layer.angle = 0;
+			ret.set_float(layer.canvasToLayer(touch.x, touch.y, true));
+			layer.scale = oldScale;
+			layer.zoomRate = oldZoomRate;
+			layer.parallaxX = oldParallaxX;
+			layer.angle = oldAngle;
+		}
+		else
+		{
+			if (cr.is_number(layerparam))
+				layer = this.runtime.getLayerByNumber(layerparam);
+			else
+				layer = this.runtime.getLayerByName(layerparam);
+			if (layer)
+				ret.set_float(layer.canvasToLayer(touch.x, touch.y, true));
+			else
+				ret.set_float(0);
+		}
+	};
+	Exps.prototype.Y = function (ret, layerparam)
+	{
+		var index = this.getTouchIndex;
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var layer, oldScale, oldZoomRate, oldParallaxY, oldAngle;
+		if (cr.is_undefined(layerparam))
+		{
+			layer = this.runtime.getLayerByNumber(0);
+			oldScale = layer.scale;
+			oldZoomRate = layer.zoomRate;
+			oldParallaxY = layer.parallaxY;
+			oldAngle = layer.angle;
+			layer.scale = 1;
+			layer.zoomRate = 1.0;
+			layer.parallaxY = 1.0;
+			layer.angle = 0;
+			ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, false));
+			layer.scale = oldScale;
+			layer.zoomRate = oldZoomRate;
+			layer.parallaxY = oldParallaxY;
+			layer.angle = oldAngle;
+		}
+		else
+		{
+			if (cr.is_number(layerparam))
+				layer = this.runtime.getLayerByNumber(layerparam);
+			else
+				layer = this.runtime.getLayerByName(layerparam);
+			if (layer)
+				ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, false));
+			else
+				ret.set_float(0);
+		}
+	};
+	Exps.prototype.YAt = function (ret, index, layerparam)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var layer, oldScale, oldZoomRate, oldParallaxY, oldAngle;
+		if (cr.is_undefined(layerparam))
+		{
+			layer = this.runtime.getLayerByNumber(0);
+			oldScale = layer.scale;
+			oldZoomRate = layer.zoomRate;
+			oldParallaxY = layer.parallaxY;
+			oldAngle = layer.angle;
+			layer.scale = 1;
+			layer.zoomRate = 1.0;
+			layer.parallaxY = 1.0;
+			layer.angle = 0;
+			ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, false));
+			layer.scale = oldScale;
+			layer.zoomRate = oldZoomRate;
+			layer.parallaxY = oldParallaxY;
+			layer.angle = oldAngle;
+		}
+		else
+		{
+			if (cr.is_number(layerparam))
+				layer = this.runtime.getLayerByNumber(layerparam);
+			else
+				layer = this.runtime.getLayerByName(layerparam);
+			if (layer)
+				ret.set_float(layer.canvasToLayer(this.touches[index].x, this.touches[index].y, false));
+			else
+				ret.set_float(0);
+		}
+	};
+	Exps.prototype.YForID = function (ret, id, layerparam)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		var layer, oldScale, oldZoomRate, oldParallaxY, oldAngle;
+		if (cr.is_undefined(layerparam))
+		{
+			layer = this.runtime.getLayerByNumber(0);
+			oldScale = layer.scale;
+			oldZoomRate = layer.zoomRate;
+			oldParallaxY = layer.parallaxY;
+			oldAngle = layer.angle;
+			layer.scale = 1;
+			layer.zoomRate = 1.0;
+			layer.parallaxY = 1.0;
+			layer.angle = 0;
+			ret.set_float(layer.canvasToLayer(touch.x, touch.y, false));
+			layer.scale = oldScale;
+			layer.zoomRate = oldZoomRate;
+			layer.parallaxY = oldParallaxY;
+			layer.angle = oldAngle;
+		}
+		else
+		{
+			if (cr.is_number(layerparam))
+				layer = this.runtime.getLayerByNumber(layerparam);
+			else
+				layer = this.runtime.getLayerByName(layerparam);
+			if (layer)
+				ret.set_float(layer.canvasToLayer(touch.x, touch.y, false));
+			else
+				ret.set_float(0);
+		}
+	};
+	Exps.prototype.AbsoluteX = function (ret)
+	{
+		if (this.touches.length)
+			ret.set_float(this.touches[0].x);
+		else
+			ret.set_float(0);
+	};
+	Exps.prototype.AbsoluteXAt = function (ret, index)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		ret.set_float(this.touches[index].x);
+	};
+	Exps.prototype.AbsoluteXForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		ret.set_float(touch.x);
+	};
+	Exps.prototype.AbsoluteY = function (ret)
+	{
+		if (this.touches.length)
+			ret.set_float(this.touches[0].y);
+		else
+			ret.set_float(0);
+	};
+	Exps.prototype.AbsoluteYAt = function (ret, index)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		ret.set_float(this.touches[index].y);
+	};
+	Exps.prototype.AbsoluteYForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		ret.set_float(touch.y);
+	};
+	Exps.prototype.SpeedAt = function (ret, index)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var t = this.touches[index];
+		var dist = cr.distanceTo(t.x, t.y, t.lastx, t.lasty);
+		var timediff = (t.time - t.lasttime) / 1000;
+		if (timediff <= 0)
+			ret.set_float(0);
+		else
+			ret.set_float(dist / timediff);
+	};
+	Exps.prototype.SpeedForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		var dist = cr.distanceTo(touch.x, touch.y, touch.lastx, touch.lasty);
+		var timediff = (touch.time - touch.lasttime) / 1000;
+		if (timediff <= 0)
+			ret.set_float(0);
+		else
+			ret.set_float(dist / timediff);
+	};
+	Exps.prototype.AngleAt = function (ret, index)
+	{
+		index = Math.floor(index);
+		if (index < 0 || index >= this.touches.length)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var t = this.touches[index];
+		ret.set_float(cr.to_degrees(cr.angleTo(t.lastx, t.lasty, t.x, t.y)));
+	};
+	Exps.prototype.AngleForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		ret.set_float(cr.to_degrees(cr.angleTo(touch.lastx, touch.lasty, touch.x, touch.y)));
+	};
+	Exps.prototype.Alpha = function (ret)
+	{
+		ret.set_float(this.getAlpha());
+	};
+	Exps.prototype.Beta = function (ret)
+	{
+		ret.set_float(this.getBeta());
+	};
+	Exps.prototype.Gamma = function (ret)
+	{
+		ret.set_float(this.getGamma());
+	};
+	Exps.prototype.AccelerationXWithG = function (ret)
+	{
+		ret.set_float(this.acc_g_x);
+	};
+	Exps.prototype.AccelerationYWithG = function (ret)
+	{
+		ret.set_float(this.acc_g_y);
+	};
+	Exps.prototype.AccelerationZWithG = function (ret)
+	{
+		ret.set_float(this.acc_g_z);
+	};
+	Exps.prototype.AccelerationX = function (ret)
+	{
+		ret.set_float(this.acc_x);
+	};
+	Exps.prototype.AccelerationY = function (ret)
+	{
+		ret.set_float(this.acc_y);
+	};
+	Exps.prototype.AccelerationZ = function (ret)
+	{
+		ret.set_float(this.acc_z);
+	};
+	Exps.prototype.TouchIndex = function (ret)
+	{
+		ret.set_int(this.trigger_index);
+	};
+	Exps.prototype.TouchID = function (ret)
+	{
+		ret.set_float(this.trigger_id);
+	};
+	Exps.prototype.WidthForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		ret.set_float(touch.width);
+	};
+	Exps.prototype.HeightForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		ret.set_float(touch.height);
+	};
+	Exps.prototype.PressureForID = function (ret, id)
+	{
+		var index = this.findTouch(id);
+		if (index < 0)
+		{
+			ret.set_float(0);
+			return;
+		}
+		var touch = this.touches[index];
+		ret.set_float(touch.pressure);
+	};
+	pluginProto.exps = new Exps();
+}());
+;
+;
 cr.plugins_.UserMedia = function(runtime)
 {
 	this.runtime = runtime;
@@ -18285,20 +20760,898 @@ cr.behaviors.Flash = function(runtime)
 	function Exps() {};
 	behaviorProto.exps = new Exps();
 }());
+var easeOutBounceArray = [];
+var easeInElasticArray = [];
+var easeOutElasticArray = [];
+var easeInOutElasticArray = [];
+var easeInCircle = [];
+var easeOutCircle = [];
+var easeInOutCircle = [];
+var easeOutBack = [];
+var easeInOutBack = [];
+var litetween_precision = 10000;
+var updateLimit = 0; //0.0165;
+function easeOutBounce(t,b,c,d) {
+	if ((t/=d) < (1/2.75)) {
+		return c*(7.5625*t*t) + b;
+	} else if (t < (2/2.75)) {
+		return c*(7.5625*(t-=(1.5/2.75))*t + .75) + b;
+	} else if (t < (2.5/2.75)) {
+		return c*(7.5625*(t-=(2.25/2.75))*t + .9375) + b;
+	} else {
+		return c*(7.5625*(t-=(2.625/2.75))*t + .984375) + b;
+	}
+}
+function integerize(t, d)
+{
+  return Math.round(t/d*litetween_precision);
+}
+function easeFunc(easing, t, b, c, d, flip)
+{
+  var ret_ease = 0;
+  switch (easing) {
+	case 0:		// linear
+		ret_ease = c*t/d + b;
+    break;
+	case 1:		// easeInQuad
+		ret_ease = c*(t/=d)*t + b;
+    break;
+	case 2:		// easeOutQuad
+		ret_ease = -c *(t/=d)*(t-2) + b;
+    break;
+	case 3:		// easeInOutQuad
+		if ((t/=d/2) < 1)
+      ret_ease = c/2*t*t + b
+    else
+		  ret_ease = -c/2 * ((--t)*(t-2) - 1) + b;
+    break;
+	case 4:		// easeInCubic
+		ret_ease = c*(t/=d)*t*t + b;
+    break;
+	case 5:		// easeOutCubic
+		ret_ease = c*((t=t/d-1)*t*t + 1) + b;
+    break;
+	case 6:		// easeInOutCubic
+		if ((t/=d/2) < 1)
+			ret_ease = c/2*t*t*t + b
+    else
+		  ret_ease = c/2*((t-=2)*t*t + 2) + b;
+    break;
+	case 7:		// easeInQuart
+		ret_ease = c*(t/=d)*t*t*t + b;
+    break;
+	case 8:		// easeOutQuart
+		ret_ease = -c * ((t=t/d-1)*t*t*t - 1) + b;
+    break;
+	case 9:		// easeInOutQuart
+		if ((t/=d/2) < 1)
+      ret_ease = c/2*t*t*t*t + b
+    else
+		  ret_ease = -c/2 * ((t-=2)*t*t*t - 2) + b;
+    break;
+	case 10:		// easeInQuint
+		ret_ease = c*(t/=d)*t*t*t*t + b;
+    break;
+	case 11:		// easeOutQuint
+		ret_ease = c*((t=t/d-1)*t*t*t*t + 1) + b;
+    break;
+	case 12:		// easeInOutQuint
+		if ((t/=d/2) < 1)
+      ret_ease = c/2*t*t*t*t*t + b
+    else
+		  ret_ease = c/2*((t-=2)*t*t*t*t + 2) + b;
+    break;
+	case 13:		// easeInCircle
+		ret_ease = easeInCircle[integerize(t,d)];
+    break;
+	case 14:		// easeOutCircle
+		ret_ease = easeOutCircle[integerize(t,d)];
+    break;
+	case 15:		// easeInOutCircle
+		ret_ease = easeInOutCircle[integerize(t,d)];
+    break;
+	case 16:		// easeInBack
+		var s = 0;
+		if (s==0) s = 1.70158;
+		ret_ease = c*(t/=d)*t*((s+1)*t - s) + b;
+    break;
+	case 17:		// easeOutBack
+		ret_ease = easeOutBack[integerize(t,d)];
+    break;
+	case 18:		// easeInOutBack
+		ret_ease = easeInOutBack[integerize(t,d)];
+    break;
+	case 19:	//easeInElastic
+		ret_ease = easeInElasticArray[integerize(t, d)];
+    break;
+	case 20:	//easeOutElastic
+    ret_ease = easeOutElasticArray[integerize(t,d)];
+    break;
+	case 21:	//easeInOutElastic
+    ret_ease = easeInOutElasticArray[integerize(t,d)];
+    break;
+	case 22:	//easeInBounce
+		ret_ease = c - easeOutBounceArray[integerize(d-t, d)] + b;
+    break;
+	case 23:	//easeOutBounce
+		ret_ease = easeOutBounceArray[integerize(t, d)];
+    break;
+	case 24:	//easeInOutBounce
+		if (t < d/2)
+      ret_ease = (c - easeOutBounceArray[integerize(d-(t*2), d)] + b) * 0.5 +b;
+		else
+      ret_ease = easeOutBounceArray[integerize(t*2-d, d)] * .5 + c*.5 + b;
+    break;
+	case 25:	//easeInSmoothstep
+		var mt = (t/d) / 2;
+		ret_ease = (2*(mt * mt * (3 - 2*mt)));
+    break;
+	case 26:	//easeOutSmoothstep
+		var mt = ((t/d) + 1) / 2;
+		ret_ease = ((2*(mt * mt * (3 - 2*mt))) - 1);
+    break;
+	case 27:	//easeInOutSmoothstep
+		var mt = (t / d);
+		ret_ease = (mt * mt * (3 - 2*mt));
+    break;
+	};
+  if (flip)
+    return (c - b) - ret_ease
+  else
+    return ret_ease;
+};
+(function preCalculateArray() {
+  var d = 1.0;
+  var b = 0.0;
+  var c = 1.0;
+  var result = 0.0;
+  var a = 0;
+  var p = 0;
+  var t = 0;
+  var s = 0;
+  for (var ti = 0; ti <= litetween_precision; ti++) {
+    t = ti/litetween_precision;
+  	if ((t/=d) < (1/2.75)) {
+  		result = c*(7.5625*t*t) + b;
+  	} else if (t < (2/2.75)) {
+  		result = c*(7.5625*(t-=(1.5/2.75))*t + .75) + b;
+  	} else if (t < (2.5/2.75)) {
+  		result = c*(7.5625*(t-=(2.25/2.75))*t + .9375) + b;
+  	} else {
+  		result = c*(7.5625*(t-=(2.625/2.75))*t + .984375) + b;
+  	}
+    easeOutBounceArray[ti] = easeOutBounce(ti/litetween_precision, b, c, d);
+    t = ti/litetween_precision; a = 0; p = 0;
+    if (t==0) result = b; if ((t/=d)==1) result = b+c;
+    if (p==0) p=d*.3;	if (a==0 || a < Math.abs(c)) { a=c; var s=p/4; }
+    else var s = p/(2*Math.PI) * Math.asin (c/a);
+		result = -(a*Math.pow(2,10*(t-=1)) * Math.sin( (t*d-s)*(2*Math.PI)/p )) + b;
+    easeInElasticArray[ti] = result;
+    t = ti/litetween_precision; a = 0; p = 0;
+		if (t==0) result= b;  if ((t/=d)==1) result= b+c;  if (p == 0) p=d*.3;
+		if (a==0 || a < Math.abs(c)) { a=c; var s=p/4; }
+		else var s = p/(2*Math.PI) * Math.asin (c/a);
+		result= (a*Math.pow(2,-10*t) * Math.sin( (t*d-s)*(2*Math.PI)/p ) + c + b);
+    easeOutElasticArray[ti] = result;
+    t = ti/litetween_precision; a = 0; p = 0;
+		if (t==0) result = b;
+		if ((t/=d/2)==2) result = b+c;
+		if (p==0) p=d*(.3*1.5);
+		if (a==0 || a < Math.abs(c)) { a=c; var s=p/4; }
+		else var s = p/(2*Math.PI) * Math.asin (c/a);
+		if (t < 1)
+      result = -.5*(a*Math.pow(2,10*(t-=1)) * Math.sin( (t*d-s)*(2*Math.PI)/p )) + b
+    else
+		  result = a*Math.pow(2,-10*(t-=1)) * Math.sin( (t*d-s)*(2*Math.PI)/p )*.5 + c + b;
+    easeInOutElasticArray[ti] = result;
+    t = ti/litetween_precision; easeInCircle[ti] = -(Math.sqrt(1-t*t) - 1);
+    t = ti/litetween_precision; easeOutCircle[ti] = Math.sqrt(1 - ((t-1)*(t-1)));
+    t = ti/litetween_precision;
+		if ((t/=d/2) < 1) result = -c/2 * (Math.sqrt(1 - t*t) - 1) + b
+    else result = c/2 * (Math.sqrt(1 - (t-=2)*t) + 1) + b;
+    easeInOutCircle[ti] = result;
+    t = ti/litetween_precision; s = 0;
+		if (s==0) s = 1.70158;
+		result = c*((t=t/d-1)*t*((s+1)*t + s) + 1) + b;
+    easeOutBack[ti] = result;
+    t = ti/litetween_precision; s = 0; if (s==0) s = 1.70158;
+		if ((t/=d/2) < 1)
+      result = c/2*(t*t*(((s*=(1.525))+1)*t - s)) + b
+    else
+		  result = c/2*((t-=2)*t*(((s*=(1.525))+1)*t + s) + 2) + b;
+    easeInOutBack[ti] = result;
+	}
+}())
+var TweenObject = function()
+{
+	var constructor = function (tname, tweened, easefunc, initial, target, duration, enforce)
+	{
+    this.name = tname;
+    this.value = 0;
+    this.setInitial(initial);
+    this.setTarget(target);
+    this.easefunc = easefunc;
+    this.tweened = tweened;
+    this.duration = duration;
+    this.progress = 0;
+    this.state = 0;
+    this.onStart = false;
+    this.onEnd = false;
+    this.onReverseStart = false;
+    this.onReverseEnd = false;
+    this.lastKnownValue = 0;
+    this.lastKnownValue2 = 0;
+    this.enforce = enforce;
+    this.pingpong = 1.0;
+    this.flipEase = false;
+	}
+	return constructor;
+}();
+(function () {
+	TweenObject.prototype = {
+	};
+  TweenObject.prototype.flipTarget = function ()
+  {
+    var x1 = this.initialparam1;
+    var x2 = this.initialparam2;
+    this.initialparam1 = this.targetparam1;
+    this.initialparam2 = this.targetparam2;
+    this.targetparam1 = x1;
+    this.targetparam2 = x2;
+    this.lastKnownValue = 0;
+    this.lastKnownValue2 = 0;
+  }
+  TweenObject.prototype.setInitial = function (initial)
+  {
+    this.initialparam1 = parseFloat(initial.split(",")[0]);
+    this.initialparam2 = parseFloat(initial.split(",")[1]);
+		this.lastKnownValue = 0;
+		this.lastKnownValue2 = 0;
+  }
+  TweenObject.prototype.setTarget = function (target)
+  {
+    this.targetparam1 = parseFloat(target.split(",")[0]);
+    this.targetparam2 = parseFloat(target.split(",")[1]);
+    if (isNaN(this.targetparam2)) this.targetparam2 = this.targetparam1;
+  }
+  TweenObject.prototype.OnTick = function(dt)
+  {
+    if (this.state === 0) return -1.0;
+    if (this.state === 1)
+      this.progress += dt;
+    if (this.state === 2)
+      this.progress -= dt;
+    if (this.state === 3) {
+      this.state = 0;
+    }
+    if ((this.state === 4) || (this.state === 6)) {
+      this.progress += dt * this.pingpong;
+    }
+    if (this.state === 5) {
+      this.progress += dt * this.pingpong;
+    }
+    if (this.progress < 0) {
+      this.progress = 0;
+      if (this.state === 4) {
+        this.pingpong = 1;
+      } else if (this.state === 6) {
+        this.pingpong = 1;
+        this.flipEase = false;
+      } else {
+        this.state = 0;
+      }
+      this.onReverseEnd = true;
+      return 0.0;
+    } else if (this.progress > this.duration) {
+      this.progress = this.duration;
+      if (this.state === 4) {
+        this.pingpong = -1;
+      } else if (this.state === 6) {
+        this.pingpong = -1;
+        this.flipEase = true;
+      } else if (this.state === 5) {
+        this.progress = 0.0;
+      } else {
+        this.state = 0;
+      }
+      this.onEnd = true;
+      return 1.0;
+    } else {
+      if (this.flipEase) {
+        var factor = easeFunc(this.easefunc, this.duration - this.progress, 0, 1, this.duration, this.flipEase);
+      } else {
+        var factor = easeFunc(this.easefunc, this.progress, 0, 1, this.duration, this.flipEase);
+      }
+      return factor;
+    }
+  };
+}());
+;
+;
+function trim (str) {
+    return str.replace(/^\s\s*/, '').replace(/\s\s*$/, '');
+}
+cr.behaviors.lunarray_LiteTween = function(runtime)
+{
+	this.runtime = runtime;
+};
+(function ()
+{
+	var behaviorProto = cr.behaviors.lunarray_LiteTween.prototype;
+	behaviorProto.Type = function(behavior, objtype)
+	{
+		this.behavior = behavior;
+		this.objtype = objtype;
+		this.runtime = behavior.runtime;
+	};
+	var behtypeProto = behaviorProto.Type.prototype;
+	behtypeProto.onCreate = function()
+	{
+	};
+	behaviorProto.Instance = function(type, inst)
+	{
+		this.type = type;
+		this.behavior = type.behavior;
+		this.inst = inst;				// associated object instance to modify
+		this.runtime = type.runtime;
+		this.i = 0;		// progress
+	};
+	var behinstProto = behaviorProto.Instance.prototype;
+	behinstProto.onCreate = function()
+	{
+    this.playmode = this.properties[0];
+    this.active = (this.playmode == 1) || (this.playmode == 2) || (this.playmode == 3) || (this.playmode == 4);
+		this.tweened = this.properties[1]; // 0=Position|1=Size|2=Width|3=Height|4=Angle|5=Opacity|6=Value only|7=Horizontal|8=Vertical|9=Scale
+		this.easing = this.properties[2];
+		this.target = this.properties[3];
+		this.targetmode = this.properties[4];
+    this.useCurrent = false;
+    if (this.targetmode === 1) this.target = "relative("+this.target+")";
+		this.duration = this.properties[5];
+		this.enforce = (this.properties[6] === 1);
+    this.value = 0;
+    this.tween_list = {};
+    this.addToTweenList("default", this.tweened, this.easing, "current", this.target, this.duration, this.enforce);
+    if (this.properties[0] === 1) this.startTween(0)
+    if (this.properties[0] === 2) this.startTween(2)
+    if (this.properties[0] === 3) this.startTween(3)
+    if (this.properties[0] === 4) this.startTween(4)
+	};
+	behinstProto.parseCurrent = function(tweened, parseText)
+  {
+    if (parseText === undefined) parseText = "current";
+    var parsed = trim(parseText);
+    parseText = trim(parseText);
+    var value = this.value;
+    if (parseText === "current") {
+      switch (tweened) {
+        case 0: parsed = this.inst.x + "," + this.inst.y; break;
+        case 1: parsed = this.inst.width + "," + this.inst.height; break;
+        case 2: parsed = this.inst.width + "," + this.inst.height; break;
+        case 3: parsed = this.inst.width + "," + this.inst.height; break;
+        case 4: parsed = cr.to_degrees(this.inst.angle) + "," + cr.to_degrees(this.inst.angle); break;
+        case 5: parsed = (this.inst.opacity*100) + "," + (this.inst.opacity*100); break;
+        case 6: parsed = value + "," + value; break;
+        case 7: parsed = this.inst.x + "," + this.inst.y; break;
+        case 8: parsed = this.inst.x + "," + this.inst.y; break;
+        case 9:
+          if (this.inst.curFrame !== undefined)
+            parsed = (this.inst.width/this.inst.curFrame.width) + "," +(this.inst.height/this.inst.curFrame.height)
+          else
+            parsed = "1,1";
+          break;
+        default:  break;
+      }
+    }
+    if (parseText.substring(0,8) === "relative") {
+      var param1 = parseText.match(/\((.*?)\)/);
+      if (param1) {
+        var relativex = parseFloat(param1[1].split(",")[0]);
+        var relativey = parseFloat(param1[1].split(",")[1]);
+      }
+      if (isNaN(relativex)) relativex = 0;
+      if (isNaN(relativey)) relativey = 0;
+      switch (tweened) {
+        case 0: parsed = (this.inst.x+relativex) + "," + (this.inst.y+relativey); break;
+        case 1: parsed = (this.inst.width+relativex) + "," + (this.inst.height+relativey); break;
+        case 2: parsed = (this.inst.width+relativex) + "," + (this.inst.height+relativey); break;
+        case 3: parsed = (this.inst.width+relativex) + "," + (this.inst.height+relativey); break;
+        case 4: parsed = (cr.to_degrees(this.inst.angle)+relativex) + "," + (cr.to_degrees(this.inst.angle)+relativey); break;
+        case 5: parsed = (this.inst.opacity*100+relativex) + "," + (this.inst.opacity*100+relativey); break;
+        case 6: parsed = value+relativex + "," + value+relativex; break;
+        case 7: parsed = (this.inst.x+relativex) + "," + (this.inst.y); break;
+        case 8: parsed = (this.inst.x) + "," + (this.inst.y+relativex); break;
+        case 9: parsed = (relativex) + "," + (relativey); break;
+        default:  break;
+      }
+    }
+    return parsed;
+  };
+	behinstProto.addToTweenList = function(tname, tweened, easing, init, targ, duration, enforce)
+  {
+    init = this.parseCurrent(tweened, init);
+    targ = this.parseCurrent(tweened, targ);
+    if (this.tween_list[tname] !== undefined) {
+      delete this.tween_list[tname]
+    }
+    this.tween_list[tname] = new TweenObject(tname, tweened, easing, init, targ, duration, enforce);
+    this.tween_list[tname].dt = 0;
+  };
+	behinstProto.saveToJSON = function ()
+	{
+    var v = JSON.stringify(this.tween_list["default"]);
+		return {
+			"playmode": this.playmode,
+			"active": this.active,
+			"tweened": this.tweened,
+			"easing": this.easing,
+			"target": this.target,
+			"targetmode": this.targetmode,
+			"useCurrent": this.useCurrent,
+			"duration": this.duration,
+			"enforce": this.enforce,
+			"value": this.value,
+			"tweenlist": JSON.stringify(this.tween_list["default"])
+		};
+	};
+  TweenObject.Load = function(rawObj, tname, tweened, easing, init, targ, duration, enforce)
+  {
+    var obj = new TweenObject(tname, tweened, easing, init, targ, duration, enforce);
+    for(var i in rawObj)
+        obj[i] = rawObj[i];
+    return obj;
+  };
+	behinstProto.loadFromJSON = function (o)
+	{
+    var x = JSON.parse(o["tweenlist"]);
+    var tempObj = TweenObject.Load(x, x.name, x.tweened, x.easefunc, x.initialparam1+","+x.initialparam2, x.targetparam1+","+x.targetparam2, x.duration, x.enforce);
+		this.tween_list["default"] = tempObj;
+	  this.playmode = o["playmode"];
+		this.active = o["active"];
+		this.movement = o["tweened"];
+		this.easing = o["easing"];
+		this.target = o["target"];
+		this.targetmode = o["targetmode"];
+		this.useCurrent = o["useCurrent"];
+		this.duration = o["duration"];
+		this.enforce = o["enforce"];
+		this.value = o["value"];
+	};
+	behinstProto.setProgressTo = function (mark)
+	{
+    if (mark > 1.0) mark = 1.0;
+    if (mark < 0.0) mark = 0.0;
+    for (var i in this.tween_list) {
+      var inst = this.tween_list[i];
+      inst.lastKnownValue = 0;
+      inst.lastKnownValue2 = 0;
+      inst.state = 3;
+      inst.progress = mark * inst.duration;
+      var factor = inst.OnTick(0);
+      this.updateTween(inst, factor);
+    }
+  }
+	behinstProto.startTween = function (startMode)
+	{
+    for (var i in this.tween_list) {
+      var inst = this.tween_list[i];
+      if (this.useCurrent) {
+        var init = this.parseCurrent(inst.tweened, "current");
+        var target = this.parseCurrent(inst.tweened, this.target);
+        inst.setInitial(init);
+        inst.setTarget(target);
+      }
+      if (startMode === 0) {
+        inst.progress = 0.000001;
+        inst.lastKnownValue = 0;
+        inst.lastKnownValue2 = 0;
+        inst.onStart = true;
+        inst.state = 1;
+      }
+      if (startMode === 1) {
+        inst.state = 1;
+      }
+      if ((startMode === 2) || (startMode === 4)) {
+        inst.progress = 0.000001;
+        inst.lastKnownValue = 0;
+        inst.lastKnownValue2 = 0;
+        inst.onStart = true;
+        if (startMode == 2) inst.state = 4; //state ping pong
+        if (startMode == 4) inst.state = 6; //state flip flop
+      }
+      if (startMode === 3) {
+        inst.progress = 0.000001;
+        inst.lastKnownValue = 0;
+        inst.lastKnownValue2 = 0;
+        inst.onStart = true;
+        inst.state = 5;
+      }
+    }
+  }
+	behinstProto.stopTween = function (stopMode)
+	{
+    for (var i in this.tween_list) {
+      var inst = this.tween_list[i];
+      if (stopMode === 1) inst.progress = 0.0;
+      if (stopMode === 2) inst.progress = inst.duration;
+      inst.state = 3;
+      var factor = inst.OnTick(0);
+      this.updateTween(inst, factor);
+    }
+  }
+	behinstProto.reverseTween = function(reverseMode)
+	{
+    for (var i in this.tween_list) {
+      var inst = this.tween_list[i];
+      if (reverseMode === 1) {
+        inst.progress = inst.duration;
+        inst.lastKnownValue = 0;
+        inst.lastKnownValue2 = 0;
+        inst.onReverseStart = true;
+      }
+      inst.state = 2;
+    }
+  }
+	behinstProto.updateTween = function (inst, factor)
+	{
+    var isMirrored = 1;
+    var isFlipped = 1;
+    if (this.inst.width < 0) isMirrored = -1;
+    if (this.inst.height < 0) isFlipped = -1;
+    if (inst.tweened === 0) {
+      if (inst.enforce) {
+	      this.inst.x = inst.initialparam1 + (inst.targetparam1 - inst.initialparam1) * factor;
+        this.inst.y = inst.initialparam2 + (inst.targetparam2 - inst.initialparam2) * factor;
+      } else {
+        this.inst.x += ((inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue;
+        this.inst.y += ((inst.targetparam2 - inst.initialparam2) * factor) - inst.lastKnownValue2;
+        inst.lastKnownValue = ((inst.targetparam1 - inst.initialparam1) * factor);
+        inst.lastKnownValue2 = ((inst.targetparam2 - inst.initialparam2) * factor);
+      }
+    } else if (inst.tweened === 1) {
+      if (inst.enforce) {
+  			this.inst.width = (isMirrored * inst.initialparam1 + ((inst.targetparam1 - inst.initialparam1) * (factor * isMirrored)));
+	   		this.inst.height = (isFlipped * inst.initialparam2 + ((inst.targetparam2 - inst.initialparam2) * (factor * isFlipped)));
+      } else {
+       	this.inst.width +=  (isMirrored *(inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue;
+      	this.inst.height += (isFlipped *(inst.targetparam2 - inst.initialparam2) * factor) - inst.lastKnownValue2;
+        inst.lastKnownValue = (isMirrored *(inst.targetparam1 - inst.initialparam1) * factor);
+        inst.lastKnownValue2 = (isFlipped *(inst.targetparam2 - inst.initialparam2) * factor);
+      }
+    } else if (inst.tweened === 2) {
+      if (inst.enforce) {
+  			this.inst.width = (isMirrored * inst.initialparam1 + ((inst.targetparam1 - inst.initialparam1) * (factor * isMirrored)));
+      } else {
+      	this.inst.width += (isMirrored *(inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue;
+        inst.lastKnownValue = (isMirrored *(inst.targetparam1 - inst.initialparam1) * factor);
+      }
+    } else if (inst.tweened === 3) {
+      if (inst.enforce) {
+	   		this.inst.height = (isFlipped * inst.initialparam2 + ((inst.targetparam2 - inst.initialparam2) * (factor * isFlipped)));
+      } else {
+      	this.inst.height += (isFlipped * (inst.targetparam2 - inst.initialparam2) * factor) - inst.lastKnownValue2;
+        inst.lastKnownValue2 = (isFlipped * (inst.targetparam2 - inst.initialparam2) * factor);
+      }
+    } else if (inst.tweened === 4) {
+      if (inst.enforce) {
+  		  var tangle = inst.initialparam1 + (inst.targetparam1 - inst.initialparam1) * factor;
+  		  this.inst.angle = cr.clamp_angle(cr.to_radians(tangle));
+      } else {
+  		  var tangle = ((inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue;
+  		  this.inst.angle = cr.clamp_angle(this.inst.angle + cr.to_radians(tangle));
+        inst.lastKnownValue = (inst.targetparam1 - inst.initialparam1) * factor;
+      }
+    } else if (inst.tweened === 5) {
+      if (inst.enforce) {
+  		  this.inst.opacity = (inst.initialparam1 + (inst.targetparam1 - inst.initialparam1) * factor) / 100;
+      } else {
+  		  this.inst.opacity += (((inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue) / 100;
+        inst.lastKnownValue = ((inst.targetparam1 - inst.initialparam1) * factor);
+      }
+    } else if (inst.tweened === 6) {
+      if (inst.enforce) {
+  		  this.value = (inst.initialparam1 + (inst.targetparam1 - inst.initialparam1) * factor);
+      } else {
+  		  this.value += (((inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue);
+        inst.lastKnownValue = ((inst.targetparam1 - inst.initialparam1) * factor);
+      }
+    } else if (inst.tweened === 7) {
+      if (inst.enforce) {
+	      this.inst.x = inst.initialparam1 + (inst.targetparam1 - inst.initialparam1) * factor;
+      } else {
+        this.inst.x += ((inst.targetparam1 - inst.initialparam1) * factor) - inst.lastKnownValue;
+        inst.lastKnownValue = ((inst.targetparam1 - inst.initialparam1) * factor);
+      }
+    } else if (inst.tweened === 8) {
+      if (inst.enforce) {
+        this.inst.y = inst.initialparam2 + (inst.targetparam2 - inst.initialparam2) * factor;
+      } else {
+        this.inst.y += ((inst.targetparam2 - inst.initialparam2) * factor) - inst.lastKnownValue2;
+        inst.lastKnownValue2 = ((inst.targetparam2 - inst.initialparam2) * factor);
+      }
+    } else if (inst.tweened === 9) {
+      var scalex = inst.initialparam1 + (inst.targetparam1 - inst.initialparam1) * factor;
+      var scaley = inst.initialparam2 + (inst.targetparam2 - inst.initialparam2) * factor;
+      if (this.inst.width < 0) scalex = inst.initialparam1 + (inst.targetparam1 + inst.initialparam1) * -factor;
+      if (this.inst.height < 0)  scaley = inst.initialparam2 + (inst.targetparam2 + inst.initialparam2) * -factor;
+      if (inst.enforce) {
+        this.inst.width = this.inst.curFrame.width * scalex;
+        this.inst.height = this.inst.curFrame.height * scaley;
+      } else {
+        if (this.inst.width < 0) {
+      	  this.inst.width = scalex * (this.inst.width / (-1+inst.lastKnownValue));
+          inst.lastKnownValue = scalex + 1
+        } else {
+      	  this.inst.width = scalex * (this.inst.width / (1+inst.lastKnownValue));
+          inst.lastKnownValue = scalex - 1;
+        }
+        if (this.inst.height < 0) {
+          this.inst.height = scaley * (this.inst.height / (-1+inst.lastKnownValue2));
+          inst.lastKnownValue2 = scaley + 1
+        } else {
+          this.inst.height = scaley * (this.inst.height / (1+inst.lastKnownValue2));
+          inst.lastKnownValue2 = scaley - 1;
+        }
+      }
+    }
+    this.inst.set_bbox_changed();
+  }
+	behinstProto.tick = function ()
+	{
+		var dt = this.runtime.getDt(this.inst);
+    var inst = this.tween_list["default"];
+    if (inst.state !== 0) {
+      if (inst.onStart) {
+  			this.runtime.trigger(cr.behaviors.lunarray_LiteTween.prototype.cnds.OnStart, this.inst);
+        inst.onStart = false;
+      }
+      if (inst.onReverseStart) {
+  		  this.runtime.trigger(cr.behaviors.lunarray_LiteTween.prototype.cnds.OnReverseStart, this.inst);
+        inst.onReverseStart = false;
+      }
+      this.active = (inst.state == 1) || (inst.state == 2) || (inst.state == 4) || (inst.state == 5) || (inst.state == 6);
+      var factor = inst.OnTick(dt);
+      this.updateTween(inst, factor);
+      if (inst.onEnd) {
+  		  this.runtime.trigger(cr.behaviors.lunarray_LiteTween.prototype.cnds.OnEnd, this.inst);
+        inst.onEnd = false;
+      }
+      if (inst.onReverseEnd) {
+  		  this.runtime.trigger(cr.behaviors.lunarray_LiteTween.prototype.cnds.OnReverseEnd, this.inst);
+        inst.onReverseEnd = false;
+      }
+    }
+	};
+	behaviorProto.cnds = {};
+	var cnds = behaviorProto.cnds;
+	cnds.IsActive = function ()
+	{
+		return (this.tween_list["default"].state !== 0);
+	};
+	cnds.IsReversing = function ()
+	{
+		return (this.tween_list["default"].state == 2);
+	};
+	cnds.CompareProgress = function (cmp, v)
+	{
+    var inst = this.tween_list["default"];
+		return cr.do_cmp((inst.progress / inst.duration), cmp, v);
+	};
+	cnds.OnStart = function ()
+	{
+    if (this.tween_list["default"] === undefined)
+      return false;
+    return this.tween_list["default"].onStart;
+	};
+	cnds.OnReverseStart = function ()
+	{
+    if (this.tween_list["default"] === undefined)
+      return false;
+    return this.tween_list["default"].onReverseStart;
+	};
+  cnds.OnEnd = function ()
+	{
+    if (this.tween_list["default"] === undefined)
+      return false;
+    return this.tween_list["default"].onEnd;
+	};
+  cnds.OnReverseEnd = function ()
+	{
+    if (this.tween_list["default"] === undefined)
+      return false;
+    return this.tween_list["default"].onReverseEnd;
+	};
+	behaviorProto.acts = {};
+	var acts = behaviorProto.acts;
+	acts.Start = function (startmode, current)
+	{
+    this.useCurrent = (current == 1);
+    this.startTween(startmode);
+	};
+	acts.Stop = function (stopmode)
+	{
+    this.stopTween(stopmode);
+	};
+	acts.Reverse = function (revMode)
+	{
+    this.reverseTween(revMode);
+	};
+ 	acts.ProgressTo = function (progress)
+	{
+    this.setProgressTo(progress);
+	};
+	acts.SetDuration = function (x)
+	{
+    if (isNaN(x)) return;
+    if (x < 0) return;
+    if (this.tween_list["default"] === undefined) return;
+		this.tween_list["default"].duration = x;
+	};
+	acts.SetEnforce = function (x)
+	{
+    if (this.tween_list["default"] === undefined) return;
+		this.tween_list["default"].enforce = (x===1);
+	};
+	acts.SetInitial = function (x)
+	{
+    if (this.tween_list["default"] === undefined) return;
+    var init = this.parseCurrent(this.tween_list["default"].tweened, x);
+		this.tween_list["default"].setInitial(init);
+	};
+	acts.SetTarget = function (targettype, absrel, x)
+	{
+    if (this.tween_list["default"] === undefined) return;
+    if (isNaN(x)) return;
+    var inst = this.tween_list["default"];
+    var parsed = x + "";
+    this.targetmode = absrel;
+    var x1 = "";
+    var x2 = "";
+    if (absrel === 1) {
+      this.target = "relative(" + parsed + ")";
+      switch (targettype) {
+        case 0: x1 = (this.inst.x + x); x2 = inst.targetparam2; break;
+        case 1: x1 = inst.targetparam1; x2 = (this.inst.y + x); break;
+        case 2: x1 = "" + cr.to_degrees(this.inst.angle + cr.to_radians(x)); x2 = x1; break; //angle
+        case 3: x1 = "" + (this.inst.opacity*100) + x; x2 = x1; break; //opacity
+        case 4: x1 = (this.inst.width + x); x2 = inst.targetparam2; break; //width
+        case 5: x1 = inst.targetparam1; x2 = (this.inst.height + x); break; //height
+        case 6: x1 = x; x2 = x; break; //value
+        default:  break;
+      }
+      parsed = x1 + "," + x2;
+    } else {
+      switch (targettype) {
+        case 0: x1 = x; x2 = inst.targetparam2; break;
+        case 1: x1 = inst.targetparam1; x2 = x; break;
+        case 2: x1 = x; x2 = x; break; //angle
+        case 3: x1 = x; x2 = x; break; //opacity
+        case 4: x1 = x; x2 = inst.targetparam2; break; //width
+        case 5: x1 = inst.targetparam1; x2 = x; break; //height
+        case 6: x1 = x; x2 = x; break; //value
+        default:  break;
+      }
+      parsed = x1 + "," + x2;
+      this.target = parsed;
+    }
+    var init = this.parseCurrent(this.tween_list["default"].tweened, "current");
+    var targ = this.parseCurrent(this.tween_list["default"].tweened, parsed);
+ 		inst.setInitial(init);
+ 		inst.setTarget(targ);
+	};
+	acts.SetTweenedProperty = function (x)
+	{
+    if (this.tween_list["default"] === undefined) return;
+		this.tween_list["default"].tweened = x;
+	};
+	acts.SetEasing = function (x)
+	{
+    if (this.tween_list["default"] === undefined) return;
+		this.tween_list["default"].easefunc = x;
+	};
+ 	acts.SetValue = function (x)
+	{
+    var inst = this.tween_list["default"];
+		this.value = x;
+    if (inst.tweened === 6)
+      inst.setInitial( this.parseCurrent(inst.tweened, "current") );
+	};
+	acts.SetParameter = function (tweened, easefunction, target, duration, enforce)
+	{
+    if (this.tween_list["default"] === undefined) {
+      this.addToTweenList("default", tweened, easefunction, initial, target, duration, enforce, 0);
+    } else {
+      var inst = this.tween_list["default"];
+      inst.tweened = tweened;
+  		inst.easefunc = easefunction;
+      inst.setInitial( this.parseCurrent(tweened, "current") );
+      inst.setTarget( this.parseCurrent(tweened, target) );
+      inst.duration = duration;
+      inst.enforce = (enforce === 1);
+    }
+	};
+	behaviorProto.exps = {};
+	var exps = behaviorProto.exps;
+	exps.State = function (ret)
+	{
+    var parsed = "N/A";
+    switch (this.tween_list["default"].state) {
+      case 0: parsed = "paused"; break;
+      case 1: parsed = "playing"; break;
+      case 2: parsed = "reversing"; break;
+      case 3: parsed = "seeking"; break;
+      default:  break;
+    }
+    ret.set_string(parsed);
+	};
+	exps.Progress = function (ret)
+	{
+    var progress = this.tween_list["default"].progress/this.tween_list["default"].duration;
+    ret.set_float(progress);
+	};
+	exps.Duration = function (ret)
+	{
+    ret.set_float(this.tween_list["default"].duration);
+	};
+	exps.Target = function (ret)
+	{
+    var inst = this.tween_list["default"];
+    var parsed = "N/A";
+    switch (inst.tweened) {
+      case 0: parsed = inst.targetparam1; break;
+      case 1: parsed = inst.targetparam2; break;
+      case 2: parsed = inst.targetparam1; break;
+      case 3: parsed = inst.targetparam1; break;
+      case 4: parsed = inst.targetparam1; break;
+      case 5: parsed = inst.targetparam2; break;
+      case 6: parsed = inst.targetparam1; break;
+      default:  break;
+    }
+    ret.set_float(parsed);
+	};
+	exps.Value = function (ret)
+	{
+    var tval = this.value;
+    ret.set_float(tval);
+	};
+	exps.Tween = function (ret, a_, b_, x_, easefunc_)
+	{
+    var currX = (x_>1.0?1.0:x_);
+    var factor = easeFunc(easefunc_, currX<0.0?0.0:currX, 0.0, 1.0, 1.0, false);
+    ret.set_float(a_ + factor * (b_-a_));
+	};
+}());
 cr.getObjectRefTable = function () { return [
+	cr.plugins_.AJAX,
+	cr.plugins_.Arr,
 	cr.plugins_.Button,
+	cr.plugins_.Rex_GoogleWebFontLoader,
 	cr.plugins_.Text,
+	cr.plugins_.Touch,
 	cr.plugins_.UserMedia,
 	cr.plugins_.Sprite,
 	cr.behaviors.Flash,
+	cr.behaviors.lunarray_LiteTween,
 	cr.system_object.prototype.cnds.OnLayoutStart,
 	cr.plugins_.UserMedia.prototype.acts.RequestMic,
+	cr.plugins_.AJAX.prototype.acts.RequestFile,
+	cr.plugins_.Rex_GoogleWebFontLoader.prototype.acts.AddGoogleFont,
+	cr.plugins_.Text.prototype.acts.SetText,
+	cr.plugins_.Sprite.prototype.acts.SetAnimFrame,
+	cr.plugins_.Arr.prototype.exps.At,
 	cr.plugins_.UserMedia.prototype.cnds.OnSpeechRecognitionResult,
 	cr.plugins_.UserMedia.prototype.cnds.OnApproved,
 	cr.plugins_.UserMedia.prototype.acts.RequestSpeechRecognition,
+	cr.plugins_.AJAX.prototype.cnds.OnComplete,
+	cr.plugins_.AJAX.prototype.exps.LastData,
+	cr.system_object.prototype.cnds.For,
+	cr.plugins_.Arr.prototype.acts.SetX,
+	cr.system_object.prototype.exps.trim,
+	cr.system_object.prototype.exps.tokenat,
+	cr.system_object.prototype.acts.AddVar,
+	cr.behaviors.lunarray_LiteTween.prototype.acts.Start,
 	cr.system_object.prototype.cnds.Compare,
 	cr.plugins_.UserMedia.prototype.exps.InterimTranscript,
-	cr.plugins_.Text.prototype.acts.SetText,
 	cr.system_object.prototype.acts.SetVar,
 	cr.system_object.prototype.cnds.Else,
 	cr.system_object.prototype.cnds.CompareVar,
@@ -18306,5 +21659,8 @@ cr.getObjectRefTable = function () { return [
 	cr.plugins_.Text.prototype.exps.Text,
 	cr.system_object.prototype.acts.Wait,
 	cr.plugins_.Button.prototype.cnds.OnClicked,
-	cr.system_object.prototype.acts.RestartLayout
+	cr.system_object.prototype.acts.RestartLayout,
+	cr.plugins_.Touch.prototype.cnds.OnTapGestureObject,
+	cr.plugins_.UserMedia.prototype.acts.StepSpeechRecognition,
+	cr.plugins_.Sprite.prototype.acts.SetInstanceVar
 ];};
